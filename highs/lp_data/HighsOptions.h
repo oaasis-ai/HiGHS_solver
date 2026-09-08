@@ -502,6 +502,7 @@ struct HighsOptionsStruct {
   double mip_max_stall_time;
   HighsInt mip_max_root_sep_rounds;
   bool mip_root_heuristics_first;
+  HighsInt mip_max_lp_iterations;
   HighsInt mip_max_start_nodes;
   HighsInt mip_max_leaves;
   HighsInt mip_max_improving_sols;
@@ -677,6 +678,7 @@ struct HighsOptionsStruct {
         mip_max_stall_time(0),
         mip_max_root_sep_rounds(0),
         mip_root_heuristics_first(false),
+        mip_max_lp_iterations(0),
         mip_max_start_nodes(0),
         mip_max_leaves(0),
         mip_max_improving_sols(0),
@@ -1153,6 +1155,12 @@ class HighsOptions : public HighsOptionsStruct {
         "Run RINS and RENS on the first root LP solution before separation",
         advanced, &mip_root_heuristics_first, false);
     records.push_back(record_bool);
+
+    record_int = new OptionRecordInt(
+        "mip_max_lp_iterations",
+        "MIP solver max total LP iterations (root, separation and tree)", advanced,
+        &mip_max_lp_iterations, 0, kHighsIInf, kHighsIInf);
+    records.push_back(record_int);
 
     record_int = new OptionRecordInt(
         "mip_max_start_nodes",
