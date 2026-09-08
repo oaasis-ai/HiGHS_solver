@@ -1120,8 +1120,8 @@ class HighsOptions : public HighsOptionsStruct {
 
     record_double = new OptionRecordDouble(
         "mip_max_stall_time",
-        "MIP solver max seconds without an improving solution once at least "
-        "two incumbents exist",
+        "MIP solver max seconds without a new incumbent, counted from the "
+        "first incumbent",
         advanced, &mip_max_stall_time, 0, kHighsInf, kHighsInf);
     records.push_back(record_double);
 
