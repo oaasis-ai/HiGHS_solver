@@ -772,6 +772,8 @@ void HighsMipSolverData::init() {
   numRestarts = 0;
   numRestartsRoot = 0;
   numImprovingSols = 0;
+  numIncumbents = 0;
+  lastIncumbentTime = 0;
   pruned_treeweight = 0;
   avgrootlpiters = 0;
   num_nodes = 0;
@@ -871,6 +873,8 @@ void HighsMipSolverData::runSetup() {
       double prev_upper_bound = upper_bound;
 
       upper_bound = solobj;
+      ++numIncumbents;
+      lastIncumbentTime = mipsolver.timer_.read();
 
       bool bound_change = upper_bound != prev_upper_bound;
       if (!mipsolver.submip && bound_change)
@@ -1546,6 +1550,8 @@ bool HighsMipSolverData::addIncumbent(const std::vector<double>& sol,
     double prev_upper_bound = upper_bound;
 
     upper_bound = solobj;
+    ++numIncumbents;
+    lastIncumbentTime = mipsolver.timer_.read();
     for (HighsMipWorker& worker : workers) {
       worker.upper_bound = upper_bound;
     }
@@ -1987,7 +1993,8 @@ static void clockOff(HighsProfiling* profiling) {
 void HighsMipSolverData::evaluateRootNode(HighsMipWorker& worker) {
   const bool compute_analytic_centre = true;
   if (!compute_analytic_centre) printf("NOT COMPUTING ANALYTIC CENTRE!\n");
-  HighsInt maxSepaRounds = mipsolver.submip ? 5 : kHighsIInf;
+  HighsInt maxSepaRounds =
+      mipsolver.submip ? 5 : mipsolver.options_mip_->mip_max_root_sep_rounds;
   if (numRestarts == 0)
     maxSepaRounds =
         std::min(HighsInt(2 * std::sqrt(maxTreeSizeLog2)), maxSepaRounds);
@@ -2115,6 +2122,28 @@ restart:
     heuristics.shifting(worker, firstlpsol);
 
   heuristics.flushStatistics(mipsolver, worker);
+
+  // Run the incumbent-producing sub-MIPs against the first root LP solution,
+  // ahead of the remaining root work rather than after it.
+  if (mipsolver.options_mip_->mip_root_heuristics_first && !mipsolver.submip) {
+    // RINS reads rootlpsol[col] unguarded once its own neighbourhood misses
+    // minfixingrate, and rootlpsol is not assigned until after the separation
+    // loop below — empty here, so that read would be out of bounds. The first
+    // root LP solution is what "the root solution" means at this point; the
+    // separated one overwrites it later as usual.
+    if (rootlpsol.empty()) rootlpsol = firstlpsol;
+    if (upper_limit != kHighsInf &&
+        mipsolver.options_mip_->mip_heuristic_run_rins) {
+      heuristics.RINS(worker, firstlpsol);
+      heuristics.flushStatistics(mipsolver, worker);
+      if (checkLimits()) return clockOff(profiling);
+    }
+    if (mipsolver.options_mip_->mip_heuristic_run_rens) {
+      heuristics.RENS(worker, firstlpsol);
+      heuristics.flushStatistics(mipsolver, worker);
+      if (checkLimits()) return clockOff(profiling);
+    }
+  }
 
   profiling->start(kMipClockEvaluateRootLp);
   status = evaluateRootLp(worker);
@@ -2584,6 +2613,16 @@ bool HighsMipSolverData::checkLimits(int64_t nodeOffset) const {
     }
   }
 
+  if (!mipsolver.submip && options.mip_max_lp_iterations != kHighsIInf &&
+      total_lp_iterations >= options.mip_max_lp_iterations) {
+    if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {
+      highsLogDev(options.log_options, HighsLogType::kInfo,
+                  "Reached LP iteration limit\n");
+      mipsolver.modelstatus_ = HighsModelStatus::kIterationLimit;
+    }
+    return true;
+  }
+
   if (options.mip_max_nodes != kHighsIInf &&
       num_nodes + nodeOffset >= options.mip_max_nodes) {
     if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {
@@ -2614,8 +2653,18 @@ bool HighsMipSolverData::checkLimits(int64_t nodeOffset) const {
     return true;
   }
 
-  //  const double time = mipsolver.timer_.read();
-  //  printf("checkLimits: time = %g\n", time);
+  if (!mipsolver.submip && options.mip_max_stall_time < kHighsInf &&
+      numIncumbents >= 1 &&
+      mipsolver.timer_.read() - lastIncumbentTime >=
+          options.mip_max_stall_time) {
+    if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {
+      highsLogDev(options.log_options, HighsLogType::kInfo,
+                  "Reached stall time limit\n");
+      mipsolver.modelstatus_ = HighsModelStatus::kInterrupt;
+    }
+    return true;
+  }
+
   if (options.time_limit < kHighsInf &&
       mipsolver.timer_.read() >= options.time_limit) {
     if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {

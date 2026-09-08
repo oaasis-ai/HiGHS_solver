@@ -485,6 +485,10 @@ struct HighsOptionsStruct {
   bool mip_allow_restart;
   HighsInt mip_max_nodes;
   HighsInt mip_max_stall_nodes;
+  double mip_max_stall_time;
+  HighsInt mip_max_root_sep_rounds;
+  bool mip_root_heuristics_first;
+  HighsInt mip_max_lp_iterations;
   HighsInt mip_max_start_nodes;
   HighsInt mip_max_leaves;
   HighsInt mip_max_improving_sols;
@@ -651,6 +655,10 @@ struct HighsOptionsStruct {
         mip_allow_restart(false),
         mip_max_nodes(0),
         mip_max_stall_nodes(0),
+        mip_max_stall_time(0),
+        mip_max_root_sep_rounds(0),
+        mip_root_heuristics_first(false),
+        mip_max_lp_iterations(0),
         mip_max_start_nodes(0),
         mip_max_leaves(0),
         mip_max_improving_sols(0),
@@ -1114,6 +1122,32 @@ class HighsOptions : public HighsOptionsStruct {
         "mip_max_stall_nodes",
         "MIP solver max number of nodes where estimate is above cutoff bound",
         advanced, &mip_max_stall_nodes, 0, kHighsIInf, kHighsIInf);
+    records.push_back(record_int);
+
+    record_double = new OptionRecordDouble(
+        "mip_max_stall_time",
+        "MIP solver max seconds without a new incumbent, counted from the "
+        "first incumbent",
+        advanced, &mip_max_stall_time, 0, kHighsInf, kHighsInf);
+    records.push_back(record_double);
+
+    record_int = new OptionRecordInt(
+        "mip_max_root_sep_rounds",
+        "MIP solver max rounds in the main root separation loop; the cut "
+        "rounds the later root stages add are not counted against it",
+        advanced, &mip_max_root_sep_rounds, 0, kHighsIInf, kHighsIInf);
+    records.push_back(record_int);
+
+    record_bool = new OptionRecordBool(
+        "mip_root_heuristics_first",
+        "Run RINS and RENS on the first root LP solution before separation",
+        advanced, &mip_root_heuristics_first, false);
+    records.push_back(record_bool);
+
+    record_int = new OptionRecordInt(
+        "mip_max_lp_iterations",
+        "MIP solver max total LP iterations (root, separation and tree)",
+        advanced, &mip_max_lp_iterations, 0, kHighsIInf, kHighsIInf);
     records.push_back(record_int);
 
     record_int = new OptionRecordInt(
