@@ -2126,6 +2126,12 @@ restart:
   // Run the incumbent-producing sub-MIPs against the first root LP solution,
   // ahead of the remaining root work rather than after it.
   if (mipsolver.options_mip_->mip_root_heuristics_first && !mipsolver.submip) {
+    // RINS reads rootlpsol[col] unguarded once its own neighbourhood misses
+    // minfixingrate, and rootlpsol is not assigned until after the separation
+    // loop below — empty here, so that read would be out of bounds. The first
+    // root LP solution is what "the root solution" means at this point; the
+    // separated one overwrites it later as usual.
+    if (rootlpsol.empty()) rootlpsol = firstlpsol;
     if (upper_limit != kHighsInf &&
         mipsolver.options_mip_->mip_heuristic_run_rins) {
       heuristics.RINS(worker, firstlpsol);

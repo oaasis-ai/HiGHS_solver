@@ -1133,8 +1133,9 @@ class HighsOptions : public HighsOptionsStruct {
 
     record_int = new OptionRecordInt(
         "mip_max_root_sep_rounds",
-        "MIP solver max number of root separation rounds", advanced,
-        &mip_max_root_sep_rounds, 0, kHighsIInf, kHighsIInf);
+        "MIP solver max rounds in the main root separation loop; the cut "
+        "rounds the later root stages add are not counted against it",
+        advanced, &mip_max_root_sep_rounds, 0, kHighsIInf, kHighsIInf);
     records.push_back(record_int);
 
     record_bool = new OptionRecordBool(
