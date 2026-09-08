@@ -1993,7 +1993,8 @@ static void clockOff(HighsProfiling* profiling) {
 void HighsMipSolverData::evaluateRootNode(HighsMipWorker& worker) {
   const bool compute_analytic_centre = true;
   if (!compute_analytic_centre) printf("NOT COMPUTING ANALYTIC CENTRE!\n");
-  HighsInt maxSepaRounds = mipsolver.submip ? 5 : kHighsIInf;
+  HighsInt maxSepaRounds =
+      mipsolver.submip ? 5 : mipsolver.options_mip_->mip_max_root_sep_rounds;
   if (numRestarts == 0)
     maxSepaRounds =
         std::min(HighsInt(2 * std::sqrt(maxTreeSizeLog2)), maxSepaRounds);
