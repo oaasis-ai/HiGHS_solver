@@ -485,6 +485,7 @@ struct HighsOptionsStruct {
   bool mip_allow_restart;
   HighsInt mip_max_nodes;
   HighsInt mip_max_stall_nodes;
+  double mip_max_stall_time;
   HighsInt mip_max_start_nodes;
   HighsInt mip_max_leaves;
   HighsInt mip_max_improving_sols;
@@ -651,6 +652,7 @@ struct HighsOptionsStruct {
         mip_allow_restart(false),
         mip_max_nodes(0),
         mip_max_stall_nodes(0),
+        mip_max_stall_time(0),
         mip_max_start_nodes(0),
         mip_max_leaves(0),
         mip_max_improving_sols(0),
@@ -1115,6 +1117,13 @@ class HighsOptions : public HighsOptionsStruct {
         "MIP solver max number of nodes where estimate is above cutoff bound",
         advanced, &mip_max_stall_nodes, 0, kHighsIInf, kHighsIInf);
     records.push_back(record_int);
+
+    record_double = new OptionRecordDouble(
+        "mip_max_stall_time",
+        "MIP solver max seconds without an improving solution once at least "
+        "two incumbents exist",
+        advanced, &mip_max_stall_time, 0, kHighsInf, kHighsInf);
+    records.push_back(record_double);
 
     record_int = new OptionRecordInt(
         "mip_max_start_nodes",

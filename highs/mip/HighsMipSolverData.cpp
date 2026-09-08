@@ -772,6 +772,8 @@ void HighsMipSolverData::init() {
   numRestarts = 0;
   numRestartsRoot = 0;
   numImprovingSols = 0;
+  numIncumbents = 0;
+  lastIncumbentTime = 0;
   pruned_treeweight = 0;
   avgrootlpiters = 0;
   num_nodes = 0;
@@ -871,6 +873,8 @@ void HighsMipSolverData::runSetup() {
       double prev_upper_bound = upper_bound;
 
       upper_bound = solobj;
+    ++numIncumbents;
+    lastIncumbentTime = mipsolver.timer_.read();
 
       bool bound_change = upper_bound != prev_upper_bound;
       if (!mipsolver.submip && bound_change)
@@ -1546,6 +1550,8 @@ bool HighsMipSolverData::addIncumbent(const std::vector<double>& sol,
     double prev_upper_bound = upper_bound;
 
     upper_bound = solobj;
+    ++numIncumbents;
+    lastIncumbentTime = mipsolver.timer_.read();
     for (HighsMipWorker& worker : workers) {
       worker.upper_bound = upper_bound;
     }
@@ -2614,8 +2620,17 @@ bool HighsMipSolverData::checkLimits(int64_t nodeOffset) const {
     return true;
   }
 
-  //  const double time = mipsolver.timer_.read();
-  //  printf("checkLimits: time = %g\n", time);
+  if (options.mip_max_stall_time < kHighsInf && numIncumbents >= 2 &&
+      mipsolver.timer_.read() - lastIncumbentTime >=
+          options.mip_max_stall_time) {
+    if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {
+      highsLogDev(options.log_options, HighsLogType::kInfo,
+                  "Reached stall time limit\n");
+      mipsolver.modelstatus_ = HighsModelStatus::kInterrupt;
+    }
+    return true;
+  }
+
   if (options.time_limit < kHighsInf &&
       mipsolver.timer_.read() >= options.time_limit) {
     if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {
