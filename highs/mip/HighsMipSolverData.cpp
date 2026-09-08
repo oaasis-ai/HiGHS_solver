@@ -2623,7 +2623,7 @@ bool HighsMipSolverData::checkLimits(int64_t nodeOffset) const {
     }
   }
 
-  if (options.mip_max_lp_iterations != kHighsIInf &&
+  if (!mipsolver.submip && options.mip_max_lp_iterations != kHighsIInf &&
       total_lp_iterations >= options.mip_max_lp_iterations) {
     if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {
       highsLogDev(options.log_options, HighsLogType::kInfo,
@@ -2663,7 +2663,8 @@ bool HighsMipSolverData::checkLimits(int64_t nodeOffset) const {
     return true;
   }
 
-  if (options.mip_max_stall_time < kHighsInf && numIncumbents >= 1 &&
+  if (!mipsolver.submip && options.mip_max_stall_time < kHighsInf &&
+      numIncumbents >= 1 &&
       mipsolver.timer_.read() - lastIncumbentTime >=
           options.mip_max_stall_time) {
     if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {
