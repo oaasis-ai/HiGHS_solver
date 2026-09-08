@@ -2123,6 +2123,21 @@ restart:
 
   heuristics.flushStatistics(mipsolver, worker);
 
+  // Window mode: the incumbent-producing sub-MIPs first, on the first root LP,
+  // before any separation round.
+  if (mipsolver.options_mip_->mip_root_heuristics_first && !mipsolver.submip) {
+    if (upper_limit != kHighsInf && mipsolver.options_mip_->mip_heuristic_run_rins) {
+      heuristics.RINS(worker, firstlpsol);
+      heuristics.flushStatistics(mipsolver, worker);
+      if (checkLimits()) return clockOff(profiling);
+    }
+    if (mipsolver.options_mip_->mip_heuristic_run_rens) {
+      heuristics.RENS(worker, firstlpsol);
+      heuristics.flushStatistics(mipsolver, worker);
+      if (checkLimits()) return clockOff(profiling);
+    }
+  }
+
   profiling->start(kMipClockEvaluateRootLp);
   status = evaluateRootLp(worker);
   profiling->stop(kMipClockEvaluateRootLp);
