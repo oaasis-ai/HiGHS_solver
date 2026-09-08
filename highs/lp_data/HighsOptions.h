@@ -501,6 +501,7 @@ struct HighsOptionsStruct {
   HighsInt mip_max_nodes;
   HighsInt mip_max_stall_nodes;
   double mip_max_stall_time;
+  HighsInt mip_max_root_sep_rounds;
   HighsInt mip_max_start_nodes;
   HighsInt mip_max_leaves;
   HighsInt mip_max_improving_sols;
@@ -675,6 +676,7 @@ struct HighsOptionsStruct {
         mip_max_nodes(0),
         mip_max_stall_nodes(0),
         mip_max_stall_time(0),
+        mip_max_root_sep_rounds(0),
         mip_max_start_nodes(0),
         mip_max_leaves(0),
         mip_max_improving_sols(0),
@@ -1139,6 +1141,12 @@ class HighsOptions : public HighsOptionsStruct {
         "first incumbent",
         advanced, &mip_max_stall_time, 0, kHighsInf, kHighsInf);
     records.push_back(record_double);
+
+    record_int = new OptionRecordInt(
+        "mip_max_root_sep_rounds",
+        "MIP solver max number of root separation rounds", advanced,
+        &mip_max_root_sep_rounds, 0, kHighsIInf, kHighsIInf);
+    records.push_back(record_int);
 
     record_int = new OptionRecordInt(
         "mip_max_start_nodes",
