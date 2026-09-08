@@ -1145,8 +1145,8 @@ class HighsOptions : public HighsOptionsStruct {
 
     record_int = new OptionRecordInt(
         "mip_max_lp_iterations",
-        "MIP solver max total LP iterations (root, separation and tree)", advanced,
-        &mip_max_lp_iterations, 0, kHighsIInf, kHighsIInf);
+        "MIP solver max total LP iterations (root, separation and tree)",
+        advanced, &mip_max_lp_iterations, 0, kHighsIInf, kHighsIInf);
     records.push_back(record_int);
 
     record_int = new OptionRecordInt(
