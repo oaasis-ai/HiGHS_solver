@@ -149,6 +149,8 @@ struct HighsMipSolverData {
   int64_t num_disp_lines;
 
   HighsInt numImprovingSols;
+  HighsInt numIncumbents;
+  double lastIncumbentTime;
   double lower_bound;
   double upper_bound;
   double upper_limit;
