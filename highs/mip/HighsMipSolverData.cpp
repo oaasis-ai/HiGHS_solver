@@ -869,8 +869,8 @@ void HighsMipSolverData::checkAddSolution() {
       double prev_upper_bound = upper_bound;
 
       upper_bound = solobj;
-    ++numIncumbents;
-    lastIncumbentTime = mipsolver.timer_.read();
+      ++numIncumbents;
+      lastIncumbentTime = mipsolver.timer_.read();
 
       bool bound_change = upper_bound != prev_upper_bound;
       if (!mipsolver.submip && bound_change)
@@ -2150,10 +2150,11 @@ restart:
 
   heuristics.flushStatistics(mipsolver, worker);
 
-  // Window mode: the incumbent-producing sub-MIPs first, on the first root LP,
-  // before any separation round.
+  // Run the incumbent-producing sub-MIPs against the first root LP solution,
+  // ahead of the remaining root work rather than after it.
   if (mipsolver.options_mip_->mip_root_heuristics_first && !mipsolver.submip) {
-    if (upper_limit != kHighsInf && mipsolver.options_mip_->mip_heuristic_run_rins) {
+    if (upper_limit != kHighsInf &&
+        mipsolver.options_mip_->mip_heuristic_run_rins) {
       heuristics.RINS(worker, firstlpsol);
       heuristics.flushStatistics(mipsolver, worker);
       if (checkLimits()) return clockOff(profiling);
@@ -2638,7 +2639,7 @@ bool HighsMipSolverData::checkLimits(int64_t nodeOffset) const {
     if (mipsolver.modelstatus_ == HighsModelStatus::kNotset) {
       highsLogDev(options.log_options, HighsLogType::kInfo,
                   "Reached LP iteration limit\n");
-      mipsolver.modelstatus_ = HighsModelStatus::kSolutionLimit;
+      mipsolver.modelstatus_ = HighsModelStatus::kIterationLimit;
     }
     return true;
   }
