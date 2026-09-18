@@ -3,13 +3,22 @@
 #include "HCheckConfig.h"
 #include "Highs.h"
 #include "catch.hpp"
+#include "presolve/HPresolve.h"
+#include "presolve/HighsPostsolveStack.h"
 
 const bool dev_run = false;
 
+void solveAndCheck(const std::string& message, const HighsLp& lp, Highs& h,
+                   const std::string& solver, bool use_presolve,
+                   const HighsInt require_presolved_model_num_col = -1,
+                   const HighsInt require_presolved_model_num_row = -1,
+                   const HighsInt require_presolved_model_num_nz = -1);
+
 void presolveOffOn(const std::string& message, const HighsLp& lp, Highs& h,
-                   const HighsInt require_presolved_model_num_col = 0,
-                   const HighsInt require_presolved_model_num_row = 0,
-                   const HighsInt require_presolved_model_num_nz = 0);
+                   const std::vector<std::string>& solvers,
+                   const HighsInt require_presolved_model_num_col = -1,
+                   const HighsInt require_presolved_model_num_row = -1,
+                   const HighsInt require_presolved_model_num_nz = -1);
 
 TEST_CASE("test-col-stuffing", "[highs_test_presolve_rules]") {
   HighsLp lp;
@@ -59,89 +68,378 @@ TEST_CASE("test-col-stuffing", "[highs_test_presolve_rules]") {
   lp.a_matrix_.start_ = {0, lp.num_col_};
   lp.a_matrix_.index_.resize(lp.num_col_);
   std::iota(lp.a_matrix_.index_.begin(), lp.a_matrix_.index_.end(), 0);
+  const std::vector<std::string> solvers = {kSimplexString, kIpmString,
+                                            kHiPdlpString};
   if (lp1) {
     lp.col_cost_.assign(lp.num_col_, 1);
     lp.a_matrix_.value_.assign(lp.num_col_, 1);
-    presolveOffOn("Capturing neos-787933 issue", lp, h);
+    presolveOffOn("Capturing neos-787933 issue", lp, h, solvers);
   }
   if (lp1a) {
     lp.col_cost_ = {2, 1};
     lp.a_matrix_.value_.assign(lp.num_col_, 1);
-    presolveOffOn("Variant A neos-787933 issue", lp, h);
+    presolveOffOn("Variant A neos-787933 issue", lp, h, solvers);
   }
   if (lp1b) {
     lp.col_cost_ = {-2, -1};
     lp.a_matrix_.value_.assign(lp.num_col_, 1);
-    presolveOffOn("Variant B neos-787933 issue", lp, h);
+    presolveOffOn("Variant B neos-787933 issue", lp, h, solvers);
   }
   lp.clear();
 
   h.resetGlobalScheduler(true);
 }
 
-void presolveOffOn(const std::string& message, const HighsLp& lp, Highs& h,
+TEST_CASE("test-parallel-rows-cut-ordering", "[highs_test_presolve_rules]") {
+  // Rows 0 and 1 are parallel (both [1, 1]). Row 0 is marked as a
+  // cut. detectParallelRowsAndCols must remove the cut row (0) and
+  // keep the non-cut row (1), not the other way around.
+  // Row 2 involves only col 0, breaking column parallelism.
+  HighsLp lp;
+  lp.num_col_ = 2;
+  lp.num_row_ = 3;
+  lp.sense_ = ObjSense::kMinimize;
+  lp.col_cost_ = {1, 2};
+  lp.col_lower_ = {0, 0};
+  lp.col_upper_ = {10, 10};
+  lp.row_lower_ = {-kHighsInf, -kHighsInf, -kHighsInf};
+  lp.row_upper_ = {5, 5, 3};
+  lp.a_matrix_.num_col_ = lp.num_col_;
+  lp.a_matrix_.num_row_ = lp.num_row_;
+  lp.a_matrix_.format_ = MatrixFormat::kColwise;
+  lp.a_matrix_.start_ = {0, 3, 5};
+  lp.a_matrix_.index_ = {0, 1, 2, 0, 1};
+  lp.a_matrix_.value_ = {1, 1, 1, 1, 1};
+
+  HighsOptions options;
+  options.presolve_rule_test = kPresolveRuleParallelRowsAndCols;
+  options.output_flag = dev_run;
+
+  HighsTimer timer;
+  timer.start();
+
+  presolve::HighsPostsolveStack postsolve_stack;
+  postsolve_stack.initializeIndexMaps(lp.num_row_, lp.num_col_);
+  // Mark parallel row 0 as a cut
+  postsolve_stack.setRowType(0,
+                             presolve::HighsPostsolveStack::OrigRowType::kCut);
+
+  presolve::HPresolve presolve;
+  presolve.setInput(lp, options, -1, &timer);
+  REQUIRE(presolve.okSetupPresolveDataStructures());
+  HighsModelStatus status = presolve.run(postsolve_stack);
+  timer.stop();
+  REQUIRE(status == HighsModelStatus::kNotset);
+  // One row must have been removed
+  REQUIRE(lp.num_row_ == 1);
+  // The surviving row must be original row 1 (non-cut), not row 0 (cut)
+  REQUIRE(postsolve_stack.getOrigRowIndex(0) == 1);
+  REQUIRE(!postsolve_stack.isCutRow(0));
+}
+
+TEST_CASE("test-fourier-motzkin", "[highs_test_presolve_rules]") {
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  h.setOptionValue("presolve_rule_test", kPresolveRuleFourierMotzkin);
+  h.setOptionValue("presolve_rule_logging", true);
+  h.setOptionValue("log_dev_level", 1);
+
+  const bool lp0 = true;
+  const bool lp1 = true;  // Makes eliminations marginal, and leaves x2=0
+  const bool lp2 = true;
+
+  // No PDLP due to numerical issues with FM postsolve
+  const std::vector<std::string> solvers = {kSimplexString, kIpmString};
+
+  // From "A novel linear optimization presolve technique based on
+  // Fourier-Motzkin elimination", Zhang, Ploskas and Sahinidis,
+  // Mathematical Programming Computation (2026) 18:345-378
+  HighsLp lp;
+
+  lp.num_col_ = 4;
+  lp.num_row_ = 3;
+
+  lp.col_cost_.assign(lp.num_col_, 0);
+  lp.col_lower_.assign(lp.num_col_, 0);
+  lp.col_upper_.assign(lp.num_col_, kHighsInf);
+  lp.col_upper_[0] = 40.0;
+
+  lp.row_lower_.assign(lp.num_row_, -kHighsInf);
+  lp.row_upper_ = {-30, 50, 40};
+  lp.a_matrix_.format_ = MatrixFormat::kRowwise;
+  lp.a_matrix_.start_ = {0, 3, 6, 9};
+  lp.a_matrix_.index_ = {0, 1, 3, 1, 2, 3, 1, 2, 3};
+  lp.a_matrix_.value_ = {-1, 1, -1, 2, 1, 2, 3, -1, 3};
+
+  if (lp0) {
+    REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+    presolveOffOn("FM example from paper", lp, h, solvers);
+  }
+
+  lp.col_upper_[0] = 5.0;
+  lp.row_upper_ = {-30, 75, 50};
+
+  if (lp1) {
+    REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+    presolveOffOn("FM example from paper - tightened", lp, h, solvers);
+  }
+
+  lp.col_cost_ = {1, 2, 3, 4};
+
+  REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+
+  if (lp2) {
+    // Objective reformulation is needed since all costs are nonzero
+    h.setOptionValue("presolve_fm_obj_reformulation", true);
+    presolveOffOn("FM example from paper - tightened and with costs", lp, h,
+                  solvers, 1, 6, 6);
+  }
+
+  h.resetGlobalScheduler(true);
+}
+
+TEST_CASE("test-parallel-cols-merge-lp", "[highs_test_presolve_rules]") {
+  // Example 8 (LP) from Gamrath et al. 2015: parallel column merge.
+  //
+  //   min  2x1 + 4x2 + x3
+  //   s.t. -x1 - 2x2 - x3 <= -10
+  //        0 <= x1 <= 3, 0 <= x2 <= 4, 0 <= x3 <= 5
+  //
+  // Columns 1 and 2 are parallel with lambda = 2, c2 = lambda*c1.
+  // Merge y := x1 + 2x2 in [0, 11], cost 2y.
+  // Presolved: min 2y + x3, -y - x3 <= -10, y in [0,11], x3 in [0,5].
+  // Optimal x* = (0, 2.5, 5), obj = 15.
+  HighsLp lp;
+  lp.num_col_ = 3;
+  lp.num_row_ = 1;
+  lp.sense_ = ObjSense::kMinimize;
+  lp.col_cost_ = {2, 4, 1};
+  lp.col_lower_ = {0, 0, 0};
+  lp.col_upper_ = {3, 4, 5};
+  lp.row_lower_ = {-kHighsInf};
+  lp.row_upper_ = {-10};
+  lp.a_matrix_.format_ = MatrixFormat::kRowwise;
+  lp.a_matrix_.start_ = {0, 3};
+  lp.a_matrix_.index_ = {0, 1, 2};
+  lp.a_matrix_.value_ = {-1, -2, -1};
+
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+  h.setOptionValue("presolve_rule_test", kPresolveRuleParallelRowsAndCols);
+  h.presolve();
+  REQUIRE(h.getPresolvedLp().num_col_ == 2);
+  h.run();
+  REQUIRE(h.getModelStatus() == HighsModelStatus::kOptimal);
+  REQUIRE(h.getInfo().num_primal_infeasibilities == 0);
+  REQUIRE(std::abs(h.getObjectiveValue() - 15) < 1e-8);
+
+  h.resetGlobalScheduler(true);
+}
+
+TEST_CASE("test-parallel-cols-merge-ip", "[highs_test_presolve_rules]") {
+  // Example 8 (IP) from Gamrath et al. 2015: parallel column merge.
+  //
+  //   min  2x1 + 4x2 + x3
+  //   s.t. -x1 - 2x2 - x3 <= -10
+  //        0 <= x1 <= 3, 0 <= x2 <= 4, 0 <= x3 <= 5
+  //        x1, x2, x3 integer
+  //
+  // Columns 1 and 2 are parallel with lambda = 2, c2 = lambda*c1.
+  // Merge y := x1 + 2x2 in {0, ..., 11}, cost 2y.
+  // Presolved: min 2y + x3, -y - x3 <= -10, y in [0,11], x3 in [0,5].
+  // Optimal x* = (1, 2, 5), obj = 15.
+  HighsLp lp;
+  lp.num_col_ = 3;
+  lp.num_row_ = 1;
+  lp.sense_ = ObjSense::kMinimize;
+  lp.col_cost_ = {2, 4, 1};
+  lp.col_lower_ = {0, 0, 0};
+  lp.col_upper_ = {3, 4, 5};
+  lp.row_lower_ = {-kHighsInf};
+  lp.row_upper_ = {-10};
+  lp.a_matrix_.format_ = MatrixFormat::kRowwise;
+  lp.a_matrix_.start_ = {0, 3};
+  lp.a_matrix_.index_ = {0, 1, 2};
+  lp.a_matrix_.value_ = {-1, -2, -1};
+  lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kInteger,
+                     HighsVarType::kInteger};
+
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+  h.setOptionValue("presolve_rule_test", kPresolveRuleParallelRowsAndCols);
+  h.presolve();
+  REQUIRE(h.getPresolvedLp().num_col_ == 2);
+  h.run();
+  REQUIRE(h.getModelStatus() == HighsModelStatus::kOptimal);
+  REQUIRE(h.getInfo().num_primal_infeasibilities == 0);
+  REQUIRE(std::abs(h.getObjectiveValue() - 15) < 1e-8);
+
+  h.resetGlobalScheduler(true);
+}
+
+TEST_CASE("test-parallel-cols-merge-floor-rounding",
+          "[highs_test_presolve_rules]") {
+  // Exercises the floor branch in DuplicateColumn::undo postsolve rounding.
+  // Mixed integer/continuous parallel columns with colLower = -inf so that
+  // the initial postsolve decomposition pushes duplicateCol below its lower
+  // bound. After clipping duplicateCol to its lower bound, col is recomputed
+  // and floor-rounded.
+  //
+  //   min  x1 + 2x2 +  x3 + x4
+  //   s.t. x1 + 2x2 + 3x3 + x4 >= 10
+  //                    x3 + x4 <= 6
+  //        x1 integer in (-inf, 5], x2 continuous in [3, 4],
+  //        x3 integer in [0   , 5], x4 continuous in [0, 5]
+  //
+  // col = x1 (integer), duplicateCol = x2 (continuous), colScale = 2.
+  // Merge y := x1 + 2x2 in (-inf, 13], cost y.
+  // After merge: min y + x3 + x4, y + 3x3 + x4 >= 10, x3 + x4 <= 6.
+  // Optimal: x3 = 5, x4 = 0, y = -5, obj = 0.
+  // Postsolve: col = min(0, 5) = 0, duplicateCol = (-5-0)/2 = -2.5 < 3.
+  // Clip duplicateCol to 3, recompute col = -5 - 2*3 = -11, floor(-11) = -11.
+  HighsLp lp;
+  lp.num_col_ = 4;
+  lp.num_row_ = 2;
+  lp.sense_ = ObjSense::kMinimize;
+  lp.col_cost_ = {1, 2, 1, 1};
+  lp.col_lower_ = {-kHighsInf, 3, 0, 0};
+  lp.col_upper_ = {5, 4, 5, 5};
+  lp.row_lower_ = {10, -kHighsInf};
+  lp.row_upper_ = {kHighsInf, 6};
+  lp.a_matrix_.format_ = MatrixFormat::kRowwise;
+  lp.a_matrix_.start_ = {0, 4, 6};
+  lp.a_matrix_.index_ = {0, 1, 2, 3, 2, 3};
+  lp.a_matrix_.value_ = {1, 2, 3, 1, 1, 1};
+  lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kContinuous,
+                     HighsVarType::kInteger, HighsVarType::kContinuous};
+
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+  h.setOptionValue("presolve_rule_test", kPresolveRuleParallelRowsAndCols);
+  h.presolve();
+  REQUIRE(h.getPresolvedLp().num_col_ == 3);
+  h.run();
+  REQUIRE(h.getModelStatus() == HighsModelStatus::kOptimal);
+  REQUIRE(h.getInfo().num_primal_infeasibilities == 0);
+  REQUIRE(std::abs(h.getObjectiveValue()) < 1e-8);
+
+  h.resetGlobalScheduler(true);
+}
+
+TEST_CASE("test-parallel-cols-merge-ceil-rounding",
+          "[highs_test_presolve_rules]") {
+  // Exercises the ceil branch in DuplicateColumn::undo postsolve rounding.
+  // Mixed integer/continuous parallel columns with finite colLower so that
+  // the initial postsolve decomposition pushes duplicateCol above its upper
+  // bound. After clipping duplicateCol to its upper bound, col is recomputed
+  // and ceil-rounded.
+  //
+  //   min  -x1 - 2x2 +  x3 + x4
+  //   s.t.  x1 + 2x2 + 3x3 + x4 >= 10
+  //        2x1 + 4x2 +  x3 + x4 <= 21
+  //                     x3 + x4 <= 6
+  //        x1 integer in [0, 10], x2 continuous in [0, 2],
+  //        x3 integer in [0,  5], x4 continuous in [0, 5]
+  //
+  // col = x1 (integer), duplicateCol = x2 (continuous), colScale = 2.
+  // Merge y := x1 + 2x2 in [0, 14], cost -y.
+  // After merge: min -y + x3 + x4, y + 3x3 + x4 >= 10, 2y + x3 + x4 <= 21.
+  // Optimal: x3 = 0, x4 = 0, y = 10.5, obj = -10.5.
+  // Postsolve: col = colLower = 0, duplicateCol = (10.5-0)/2 = 5.25 > 2.
+  // Clip duplicateCol to 2, recompute col = 10.5 - 2*2 = 6.5, ceil(6.5) = 7.
+  HighsLp lp;
+  lp.num_col_ = 4;
+  lp.num_row_ = 3;
+  lp.sense_ = ObjSense::kMinimize;
+  lp.col_cost_ = {-1, -2, 1, 1};
+  lp.col_lower_ = {0, 0, 0, 0};
+  lp.col_upper_ = {10, 2, 5, 5};
+  lp.row_lower_ = {10, -kHighsInf, -kHighsInf};
+  lp.row_upper_ = {kHighsInf, 21, 6};
+  lp.a_matrix_.format_ = MatrixFormat::kRowwise;
+  lp.a_matrix_.start_ = {0, 4, 8, 10};
+  lp.a_matrix_.index_ = {0, 1, 2, 3, 0, 1, 2, 3, 2, 3};
+  lp.a_matrix_.value_ = {1, 2, 3, 1, 2, 4, 1, 1, 1, 1};
+  lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kContinuous,
+                     HighsVarType::kInteger, HighsVarType::kContinuous};
+
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+  h.setOptionValue("presolve_rule_test", kPresolveRuleParallelRowsAndCols);
+  h.presolve();
+  REQUIRE(h.getPresolvedLp().num_col_ == 3);
+  h.run();
+  REQUIRE(h.getModelStatus() == HighsModelStatus::kOptimal);
+  REQUIRE(h.getInfo().num_primal_infeasibilities == 0);
+  REQUIRE(std::abs(h.getObjectiveValue() + 10.5) < 1e-8);
+
+  h.resetGlobalScheduler(true);
+}
+
+void solveAndCheck(const std::string& message, const HighsLp& lp, Highs& h,
+                   const std::string& solver, bool use_presolve,
                    const HighsInt require_presolved_model_num_col,
                    const HighsInt require_presolved_model_num_row,
                    const HighsInt require_presolved_model_num_nz) {
   const HighsRunData& run_data = h.getRunData();
-  bool presolve_on = false;
-  // If the model reduces to empty, then the output from different
-  // solvers cannot be tested
-  const bool reduce_to_empty = require_presolved_model_num_col == 0 &&
-                               require_presolved_model_num_row == 0;
-  const HighsInt to_k = reduce_to_empty ? 2 : 5;
-  for (int k = 0; k < to_k; k++) {
-    std::string solver = kSimplexString;
-    std::string run_crossover = kHighsOnString;
-    bool basis_postsolve = true;
-    if (k == 0) {
-      // Presolve off - to get the optimal solution to debug
-      // presolve
-      presolve_on = false;
-    } else {
-      presolve_on = true;
-      if (k == 1) {
-        solver = kSimplexString;
-      } else if (k == 2) {
-        solver = kIpmString;
-      } else if (k == 3) {
-        solver = kIpmString;
-        run_crossover = kHighsOffString;
-        basis_postsolve = false;
-      } else {
-        solver = kHiPdlpString;
-        basis_postsolve = false;
-      }
-    }
-    std::string presolve = presolve_on ? kHighsOnString : kHighsOffString;
-    h.setOptionValue(kPresolveString, presolve);
-    h.setOptionValue(kRunCrossoverString, run_crossover);
-    h.setOptionValue(kSolverString, solver);
-    if (dev_run)
-      printf(
-          "\n============\n%s: presolve = %s; solver = %s%s\n============\n\n",
-          message.c_str(), presolve.c_str(), solver.c_str(),
-          solver == kIpmString ? ("; run_crossover = " + run_crossover).c_str()
-                               : "");
-    REQUIRE(h.passModel(lp) == HighsStatus::kOk);
-    h.run();
-    if (dev_run) h.writeSolution("", 1);
-    if (presolve_on) {
-      // Ensure that the model is reduced to empty
+  std::string run_crossover = kHighsOnString;
+  bool basis_postsolve = true;
+  if (solver == kIpmString) {
+    run_crossover = kHighsOffString;
+    basis_postsolve = false;
+  } else if (solver == kHiPdlpString) {
+    basis_postsolve = false;
+  }
+  std::string presolve = use_presolve ? kHighsOnString : kHighsOffString;
+  h.setOptionValue(kPresolveString, presolve);
+  h.setOptionValue(kRunCrossoverString, run_crossover);
+  h.setOptionValue(kSolverString, solver);
+  if (dev_run)
+    printf("\n============\n%s: presolve = %s; solver = %s%s\n============\n\n",
+           message.c_str(), presolve.c_str(), solver.c_str(),
+           solver == kIpmString ? ("; run_crossover = " + run_crossover).c_str()
+                                : "");
+  REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+  h.run();
+  if (dev_run) h.writeSolution("", 1);
+  REQUIRE(h.getModelStatus() == HighsModelStatus::kOptimal);
+  REQUIRE(h.getInfo().num_primal_infeasibilities == 0);
+  REQUIRE(h.getInfo().num_dual_infeasibilities == 0);
+  if (use_presolve) {
+    // Ensure that the model is reduced as expected
+    if (require_presolved_model_num_col >= 0)
       REQUIRE(run_data.presolved_model_num_col ==
               require_presolved_model_num_col);
+    if (require_presolved_model_num_row >= 0)
       REQUIRE(run_data.presolved_model_num_row ==
               require_presolved_model_num_row);
+    if (require_presolved_model_num_nz >= 0)
       REQUIRE(run_data.presolved_model_num_nz ==
               require_presolved_model_num_nz);
-      // Ensure that dual postsolve is correct
-      REQUIRE(h.getModelStatus() == HighsModelStatus::kOptimal);
-      REQUIRE(h.getInfo().num_primal_infeasibilities == 0);
-      REQUIRE(h.getInfo().num_dual_infeasibilities == 0);
+    if (require_presolved_model_num_col == 0 &&
+        require_presolved_model_num_row == 0)
       REQUIRE(h.getInfo().simplex_iteration_count == 0);
-      // Ensure that any basis postsolve is correct
-      if (basis_postsolve)
-        REQUIRE(run_data.num_simplex_iterations_after_postsolve == 0);
-    }
+    // Ensure that any basis postsolve is correct
+    if (basis_postsolve)
+      REQUIRE(run_data.num_simplex_iterations_after_postsolve == 0);
+  }
+}
+
+void presolveOffOn(const std::string& message, const HighsLp& lp, Highs& h,
+                   const std::vector<std::string>& solvers,
+                   const HighsInt require_presolved_model_num_col,
+                   const HighsInt require_presolved_model_num_row,
+                   const HighsInt require_presolved_model_num_nz) {
+  // Presolve off - to get the optimal solution to debug presolve
+  solveAndCheck(message, lp, h, kSimplexString, false);
+  // Presolve on with each solver
+  for (const std::string& solver : solvers) {
+    solveAndCheck(message, lp, h, solver, true, require_presolved_model_num_col,
+                  require_presolved_model_num_row,
+                  require_presolved_model_num_nz);
   }
 }

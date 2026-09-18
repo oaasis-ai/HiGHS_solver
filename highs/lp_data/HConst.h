@@ -15,7 +15,7 @@
 #include <limits>
 #include <string>
 
-#include "util/HighsInt.h"
+#include "util/HighsType.h"
 
 const std::string kHighsCopyrightStatement =
     "Copyright (c) 2026 under MIT licence terms";
@@ -39,6 +39,7 @@ const double kExcessivelySmallObjectiveCoefficient = 1e-4;
 const double kExcessivelyLargeObjectiveCoefficient = 1e6;
 const double kExcessivelySmallBoundValue = 1e-4;
 const double kExcessivelyLargeBoundValue = 1e6;
+const double kExcessivelyLargeIntegerBoundValue = 1e5;
 
 const HighsInt kNoThreadInstance = -1;
 const bool kAllowDeveloperAssert = false;
@@ -241,7 +242,9 @@ enum HighsCallbackType : int {
   kCallbackMipGetCutPool,             // 7
   kCallbackMipDefineLazyConstraints,  // 8
   kCallbackMipUserSolution,           // 9
-  kCallbackMax = kCallbackMipUserSolution,
+  kCallbackQpFirstFeasiblePoint,      // 10
+  kCallbackQpInterrupt,               // 11
+  kCallbackMax = kCallbackQpInterrupt,
   kNumCallbackType
 };
 
@@ -280,9 +283,11 @@ enum PresolveRuleType : int {
   kPresolveRuleProbing,
   kPresolveRuleEnumeration,
   kPresolveRuleDualFixing,
+  kPresolveRuleZeroCostSingleton,
   kPresolveRuleColStuffing,
   kPresolveRuleInitialSweep,
-  kPresolveRuleMax = kPresolveRuleInitialSweep,
+  kPresolveRuleFourierMotzkin,
+  kPresolveRuleMax = kPresolveRuleFourierMotzkin,
   kPresolveRuleLastAllowOff = kPresolveRuleMax,
   kPresolveRuleCount
 };
@@ -307,6 +312,14 @@ enum IisStatus : int {
   kIisStatusMaybeInConflict,                // 0
   kIisStatusInConflict,                     // 1
   kIisStatusMax = kIisStatusInConflict
+};
+
+enum HessianOracleCallType : int {
+  kHessianOracleCallTypeMin = 0,
+  kHessianOracleCallTypeEntry = kHessianOracleCallTypeMin,
+  kHessianOracleCallTypeColumn,
+  kHessianOracleCallTypeProduct,
+  kHessianOracleCallTypeMax = kHessianOracleCallTypeProduct
 };
 
 enum MipChooseSubMipRecord : int {
@@ -382,6 +395,9 @@ const HighsInt kHighsIllegalComplementarityCount = -1;
 const double kHighsIllegalDoubleMeasure = -kHighsInf;
 const HighsInt kHighsIllegalIntMeasure = -1;
 
+// Tolerance on asymmetry in square Hessians
+const double kSquareHessianAsymmetryTolerance = 1e-10;
+
 // Maximum upper bound on semi-variables
 const double kMaxSemiVariableUpper = 1e5;
 
@@ -447,5 +463,23 @@ enum PdlpRestartStrategy {
   kPdlpRestartStrategyHalpern,
   kPdlpRestartStrategyMax = kPdlpRestartStrategyHalpern
 };
+
+namespace hipo {
+enum class ParallelTechnique {
+  kMin = 0,
+  kAnalyse = kMin,
+  kOrderNE,
+  kOrderAS,
+  kNEStruct,
+  kNEValues,
+  kTree,
+  kNode,
+  kForwardSolve,
+  kDiagonalSolve,
+  kBackwardSolve,
+  kCount,
+  kMaxSum = (1 << kCount) - 1
+};
+}
 
 #endif /* LP_DATA_HCONST_H_ */
