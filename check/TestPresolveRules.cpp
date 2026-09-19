@@ -3,6 +3,7 @@
 #include "HCheckConfig.h"
 #include "Highs.h"
 #include "catch.hpp"
+#include "parallel/HighsParallel.h"
 #include "presolve/HPresolve.h"
 #include "presolve/HighsPostsolveStack.h"
 
@@ -135,6 +136,117 @@ TEST_CASE("test-parallel-rows-cut-ordering", "[highs_test_presolve_rules]") {
   // The surviving row must be original row 1 (non-cut), not row 0 (cut)
   REQUIRE(postsolve_stack.getOrigRowIndex(0) == 1);
   REQUIRE(!postsolve_stack.isCutRow(0));
+}
+
+TEST_CASE("test-zero-cost-singleton-thread-safe-postsolve",
+          "[highs_test_presolve_rules]") {
+  // HighsPostsolveStack::undo aliases its three mutable members to
+  // thread-local copies when thread_safe is set, and every reduction case must
+  // go through those aliases. A case that pops from the members instead reads
+  // the member stack at a position only the serial path resets, which yields an
+  // arbitrary vector length in HighsDataStack::pop, and mutates state shared
+  // with the other workers. HighsMipWorker::transformNewIntegerFeasibleSolution
+  // is the production caller that passes thread_safe = true.
+  //
+  //   min  x0 + x1
+  //   s.t.  2 <= x0 + x1 + s <= 6
+  //         3 <= x0 + 2 x1
+  //         0 <= x0, x1 <= 10,  0 <= s <= 4
+  //
+  // s is a zero-cost continuous singleton in the ranged row 0, so presolve
+  // relaxes it out as kZeroObjSingletonContinuousCol and its value is only
+  // recovered in postsolve.
+  HighsLp lp;
+  lp.num_col_ = 3;
+  lp.num_row_ = 2;
+  lp.sense_ = ObjSense::kMinimize;
+  lp.col_cost_ = {1, 1, 0};
+  lp.col_lower_ = {0, 0, 0};
+  lp.col_upper_ = {10, 10, 4};
+  lp.row_lower_ = {2, 3};
+  lp.row_upper_ = {6, kHighsInf};
+  lp.a_matrix_.num_col_ = lp.num_col_;
+  lp.a_matrix_.num_row_ = lp.num_row_;
+  lp.a_matrix_.format_ = MatrixFormat::kColwise;
+  lp.a_matrix_.start_ = {0, 2, 4, 5};
+  lp.a_matrix_.index_ = {0, 1, 0, 1, 0};
+  lp.a_matrix_.value_ = {1, 1, 1, 2, 1};
+
+  const HighsLp orig_lp = lp;
+
+  HighsOptions options;
+  options.output_flag = dev_run;
+  options.presolve_rule_logging = true;
+
+  HighsTimer timer;
+  timer.start();
+
+  presolve::HighsPostsolveStack postsolve_stack;
+  postsolve_stack.initializeIndexMaps(lp.num_row_, lp.num_col_);
+
+  presolve::HPresolve presolve;
+  presolve.setInput(lp, options, -1, &timer);
+  REQUIRE(presolve.okSetupPresolveDataStructures());
+  presolve.run(postsolve_stack);
+  timer.stop();
+
+  // Everything below is vacuous unless the reduction is on the stack
+  REQUIRE(presolve.getPresolveLog().rule[kPresolveRuleZeroCostSingleton].call >
+          0);
+
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  h.setOptionValue("presolve", kHighsOffString);
+  REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+  REQUIRE(h.run() == HighsStatus::kOk);
+  const std::vector<double> reduced_col_value = h.getSolution().col_value;
+
+  auto recover = [&](const bool thread_safe) {
+    HighsSolution solution;
+    solution.col_value = reduced_col_value;
+    solution.value_valid = true;
+    postsolve_stack.undoPrimal(options, solution, -1, thread_safe);
+    return solution.col_value;
+  };
+
+  const std::vector<double> serial = recover(false);
+  REQUIRE(static_cast<HighsInt>(serial.size()) == orig_lp.num_col_);
+
+  const double objective = serial[0] * orig_lp.col_cost_[0] +
+                           serial[1] * orig_lp.col_cost_[1] +
+                           serial[2] * orig_lp.col_cost_[2];
+  REQUIRE(objective == Approx(1.5));
+
+  // s is only recovered here, and row 0 is violated if it comes back wrong
+  auto rowZeroActivity = [](const std::vector<double>& col_value) {
+    return col_value[0] + col_value[1] + col_value[2];
+  };
+  REQUIRE(rowZeroActivity(serial) >= orig_lp.row_lower_[0] - 1e-9);
+  REQUIRE(rowZeroActivity(serial) <= orig_lp.row_upper_[0] + 1e-9);
+  REQUIRE(serial[2] >= orig_lp.col_lower_[2] - 1e-9);
+  REQUIRE(serial[2] <= orig_lp.col_upper_[2] + 1e-9);
+
+  // The thread-safe path must recover the same solution from the same stack
+  const std::vector<double> thread_safe = recover(true);
+  REQUIRE(rowZeroActivity(thread_safe) >= orig_lp.row_lower_[0] - 1e-9);
+  REQUIRE(thread_safe == serial);
+
+  // and must stay correct when the workers run it concurrently, as the MIP
+  // search does whenever a worker finds an incumbent
+  highs::parallel::initialize_scheduler();
+  const HighsInt num_tasks = 8;
+  std::vector<std::vector<double>> concurrent(num_tasks);
+  {
+    highs::parallel::TaskGroup tg;
+    for (HighsInt i = 1; i < num_tasks; i++)
+      tg.spawn([&concurrent, &recover, i]() { concurrent[i] = recover(true); });
+    concurrent[0] = recover(true);
+    tg.taskWait();
+  }
+  for (const std::vector<double>& recovered : concurrent)
+    REQUIRE(recovered == serial);
+
+  h.resetGlobalScheduler(true);
 }
 
 TEST_CASE("test-fourier-motzkin", "[highs_test_presolve_rules]") {
