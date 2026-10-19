@@ -581,6 +581,149 @@ TEST_CASE("highs-callback-mip-user-set-partial-solution", "[highs-callback]") {
   runMipUserSolutionTest(userkMipUserSetPartialSolution);
 }
 
+// User solutions offered one per external-solution query, in order, and the
+// MIP primal bound HiGHS reports at each query.
+struct UserSolutionSequence {
+  std::vector<std::vector<double>> offers;
+  std::vector<double> primal_bound_at_query;
+};
+
+HighsCallbackFunctionType userkMipUserSolutionSequence =
+    [](int callback_type, const std::string& message,
+       const HighsCallbackOutput* data_out, HighsCallbackInput* data_in,
+       void* user_callback_data) {
+      auto& sequence =
+          *(static_cast<UserSolutionSequence*>(user_callback_data));
+      const size_t query = sequence.primal_bound_at_query.size();
+      sequence.primal_bound_at_query.push_back(data_out->mip_primal_bound);
+      if (query < sequence.offers.size()) {
+        data_in->user_has_solution = true;
+        data_in->user_solution = sequence.offers[query];
+      }
+    };
+
+// A 40-item binary knapsack plus a column fixed at 1 with cost 1e6. Presolve
+// removes the fixed column and carries its cost in the objective offset, so
+// the presolved objective differs from the original by a constant far larger
+// than any difference between two knapsack solutions. HiGHS's own heuristics
+// are off, so the incumbent changes only through the solutions it is given.
+static void setupOffsetKnapsack(Highs& highs, const ObjSense sense) {
+  highs.setOptionValue("output_flag", dev_run);
+  highs.setOptionValue("mip_heuristic_effort", 0.0);
+  for (const std::string heuristic :
+       {"feasibility_jump", "rins", "rens", "root_reduced_cost", "zi_round",
+        "shifting"})
+    highs.setOptionValue("mip_heuristic_run_" + heuristic, false);
+  const HighsInt num_item = 40;
+  const double sign = sense == ObjSense::kMinimize ? -1 : 1;
+  std::vector<double> cost(num_item + 1);
+  std::vector<double> lower(num_item + 1, 0);
+  std::vector<double> upper(num_item + 1, 1);
+  std::vector<HighsInt> index(num_item);
+  std::vector<double> weight(num_item);
+  for (HighsInt iCol = 0; iCol < num_item; iCol++) {
+    cost[iCol] = sign * (10 + (iCol * 37) % 23);
+    index[iCol] = iCol;
+    weight[iCol] = 5 + (iCol * 53) % 19;
+  }
+  cost[num_item] = 1e6;
+  lower[num_item] = 1;
+  highs.addCols(num_item + 1, cost.data(), lower.data(), upper.data(), 0,
+                nullptr, nullptr, nullptr);
+  std::vector<HighsVarType> integrality(num_item, HighsVarType::kInteger);
+  highs.changeColsIntegrality(0, num_item - 1, integrality.data());
+  highs.addRow(-kHighsInf, 97, num_item, index.data(), weight.data());
+  highs.changeObjectiveSense(sense);
+}
+
+// Knapsack solutions holding the optimal items, item 0 alone, and no item,
+// with their objective values.
+struct OffsetKnapsackSolutions {
+  std::vector<double> optimal;
+  double optimal_objective;
+  std::vector<double> first_item_only;
+  double first_item_only_objective;
+  std::vector<double> no_item;
+};
+
+static OffsetKnapsackSolutions offsetKnapsackSolutions(Highs& highs) {
+  OffsetKnapsackSolutions solutions;
+  highs.run();
+  REQUIRE(highs.getModelStatus() == HighsModelStatus::kOptimal);
+  solutions.optimal = highs.getSolution().col_value;
+  solutions.optimal_objective = highs.getInfo().objective_function_value;
+  const HighsLp& lp = highs.getLp();
+  const HighsInt fixed_col = lp.num_col_ - 1;
+  solutions.no_item.assign(lp.num_col_, 0);
+  solutions.no_item[fixed_col] = 1;
+  solutions.first_item_only = solutions.no_item;
+  solutions.first_item_only[0] = 1;
+  solutions.first_item_only_objective =
+      lp.col_cost_[0] + lp.col_cost_[fixed_col];
+  REQUIRE(solutions.optimal_objective != solutions.first_item_only_objective);
+  highs.clearSolver();
+  return solutions;
+}
+
+// Solves from `start`, offering `offers` one per query, and returns the MIP
+// primal bound reported at each query; there is one query beyond the offers,
+// so each offer's effect on the incumbent is seen.
+static std::vector<double> primalBoundsWithOffers(
+    Highs& highs, const std::vector<double>& start,
+    const std::vector<std::vector<double>>& offers) {
+  HighsSolution start_solution;
+  start_solution.col_value = start;
+  REQUIRE(highs.setSolution(start_solution) == HighsStatus::kOk);
+  UserSolutionSequence sequence;
+  sequence.offers = offers;
+  highs.setCallback(userkMipUserSolutionSequence, (void*)(&sequence));
+  highs.startCallback(kCallbackMipUserSolution);
+  highs.run();
+  highs.stopCallback(kCallbackMipUserSolution);
+  highs.clearSolver();
+  REQUIRE(sequence.primal_bound_at_query.size() > offers.size());
+  return sequence.primal_bound_at_query;
+}
+
+static void runImprovingUserSolutionAfterOffsetTest(const ObjSense sense) {
+  Highs highs;
+  setupOffsetKnapsack(highs, sense);
+  const OffsetKnapsackSolutions solutions = offsetKnapsackSolutions(highs);
+
+  // The optimum improves on the incumbent by far less than the offset.
+  const std::vector<double> primal_bound = primalBoundsWithOffers(
+      highs, solutions.first_item_only, {solutions.optimal});
+
+  REQUIRE(std::fabs(primal_bound[0] - solutions.first_item_only_objective) <
+          1e-6);
+  REQUIRE(std::fabs(primal_bound[1] - solutions.optimal_objective) < 1e-6);
+  highs.resetGlobalScheduler(true);
+}
+
+TEST_CASE("highs-callback-mip-user-solution-improving-after-offset-min",
+          "[highs-callback]") {
+  runImprovingUserSolutionAfterOffsetTest(ObjSense::kMinimize);
+}
+
+TEST_CASE("highs-callback-mip-user-solution-improving-after-offset-max",
+          "[highs-callback]") {
+  runImprovingUserSolutionAfterOffsetTest(ObjSense::kMaximize);
+}
+
+TEST_CASE("highs-callback-mip-user-solution-worse-after-offset",
+          "[highs-callback]") {
+  Highs highs;
+  setupOffsetKnapsack(highs, ObjSense::kMinimize);
+  const OffsetKnapsackSolutions solutions = offsetKnapsackSolutions(highs);
+
+  const std::vector<double> primal_bound = primalBoundsWithOffers(
+      highs, solutions.first_item_only, {solutions.no_item});
+
+  REQUIRE(std::fabs(primal_bound[1] - solutions.first_item_only_objective) <
+          1e-6);
+  highs.resetGlobalScheduler(true);
+}
+
 // HighsCCallbackType
 static void cstyle_userCallback(const int callback_type, const char* message,
                                 const HighsCallbackDataOut* data_out,

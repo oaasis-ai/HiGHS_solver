@@ -2870,9 +2870,15 @@ void HighsMipSolverData::queryExternalSolution(
       std::vector<double> reduced_user_solution;
       reduced_user_solution =
           postSolveStack.getReducedPrimalSolution(user_solution);
+      // addIncumbent compares the objective it is given with upper_bound,
+      // which is in the reduced space
+      const double reduced_user_solution_objective_value =
+          double(HighsInt(mipsolver.orig_model_->sense_) *
+                     user_solution_quad_objective_value -
+                 mipsolver.model_->offset_);
       const bool print_display_line = true;
       const bool is_user_solution = true;
-      addIncumbent(reduced_user_solution, user_solution_objective_value,
+      addIncumbent(reduced_user_solution, reduced_user_solution_objective_value,
                    kSolutionSourceUserSolution, print_display_line,
                    is_user_solution);
     }
