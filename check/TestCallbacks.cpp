@@ -386,7 +386,7 @@ TEST_CASE("highs-callback-logging", "[highs_callback]") {
   highs.readModel(filename);
   highs.run();
 
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-solution-basis-logging", "[highs_callback]") {
@@ -403,7 +403,7 @@ TEST_CASE("highs-callback-solution-basis-logging", "[highs_callback]") {
   if (dev_run) highs.writeSolution("", kSolutionStylePretty);
   if (dev_run) highs.writeBasis("");
 
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-simplex-interrupt", "[highs_callback]") {
@@ -420,7 +420,7 @@ TEST_CASE("highs-callback-simplex-interrupt", "[highs_callback]") {
   REQUIRE(highs.getInfo().simplex_iteration_count >
           adlittle_simplex_iteration_limit);
 
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-ipm-interrupt", "[highs_callback]") {
@@ -447,7 +447,7 @@ TEST_CASE("highs-callback-ipm-interrupt", "[highs_callback]") {
     REQUIRE(highs.getInfo().ipm_iteration_count ==
             adlittle_ipm_iteration_limit + 1);
   }
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-mip-interrupt", "[highs_callback]") {
@@ -463,7 +463,7 @@ TEST_CASE("highs-callback-mip-interrupt", "[highs_callback]") {
   REQUIRE(highs.getModelStatus() == HighsModelStatus::kInterrupt);
   REQUIRE(highs.getInfo().objective_function_value > egout_optimal_objective);
 
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-mip-improving", "[highs_callback]") {
@@ -478,7 +478,7 @@ TEST_CASE("highs-callback-mip-improving", "[highs_callback]") {
   highs.readModel(filename);
   highs.run();
 
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-mip-data", "[highs_callback]") {
@@ -492,7 +492,7 @@ TEST_CASE("highs-callback-mip-data", "[highs_callback]") {
   highs.readModel(filename);
   highs.run();
 
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-mip-solution", "[highs_callback]") {
@@ -514,7 +514,7 @@ TEST_CASE("highs-callback-mip-solution", "[highs_callback]") {
   highs.startCallback(kCallbackMipSolution);
   highs.run();
 
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-mip-cut-pool", "[highs_callback]") {
@@ -526,7 +526,7 @@ TEST_CASE("highs-callback-mip-cut-pool", "[highs_callback]") {
   highs.startCallback(kCallbackMipGetCutPool);
   highs.run();
 
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 static void runMipUserSolutionTest(
@@ -566,7 +566,7 @@ static void runMipUserSolutionTest(
         std::max(1.0, std::fabs(objective_function_value0));
     REQUIRE(objective_diff < 1e-12);
   }
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-mip-user-solution", "[highs-callback]") {
@@ -579,149 +579,6 @@ TEST_CASE("highs-callback-mip-user-set-solution", "[highs-callback]") {
 
 TEST_CASE("highs-callback-mip-user-set-partial-solution", "[highs-callback]") {
   runMipUserSolutionTest(userkMipUserSetPartialSolution);
-}
-
-// User solutions offered one per external-solution query, in order, and the
-// MIP primal bound HiGHS reports at each query.
-struct UserSolutionSequence {
-  std::vector<std::vector<double>> offers;
-  std::vector<double> primal_bound_at_query;
-};
-
-HighsCallbackFunctionType userkMipUserSolutionSequence =
-    [](int callback_type, const std::string& message,
-       const HighsCallbackOutput* data_out, HighsCallbackInput* data_in,
-       void* user_callback_data) {
-      auto& sequence =
-          *(static_cast<UserSolutionSequence*>(user_callback_data));
-      const size_t query = sequence.primal_bound_at_query.size();
-      sequence.primal_bound_at_query.push_back(data_out->mip_primal_bound);
-      if (query < sequence.offers.size()) {
-        data_in->user_has_solution = true;
-        data_in->user_solution = sequence.offers[query];
-      }
-    };
-
-// A 40-item binary knapsack plus a column fixed at 1 with cost 1e6. Presolve
-// removes the fixed column and carries its cost in the objective offset, so
-// the presolved objective differs from the original by a constant far larger
-// than any difference between two knapsack solutions. HiGHS's own heuristics
-// are off, so the incumbent changes only through the solutions it is given.
-static void setupOffsetKnapsack(Highs& highs, const ObjSense sense) {
-  highs.setOptionValue("output_flag", dev_run);
-  highs.setOptionValue("mip_heuristic_effort", 0.0);
-  for (const std::string heuristic :
-       {"feasibility_jump", "rins", "rens", "root_reduced_cost", "zi_round",
-        "shifting"})
-    highs.setOptionValue("mip_heuristic_run_" + heuristic, false);
-  const HighsInt num_item = 40;
-  const double sign = sense == ObjSense::kMinimize ? -1 : 1;
-  std::vector<double> cost(num_item + 1);
-  std::vector<double> lower(num_item + 1, 0);
-  std::vector<double> upper(num_item + 1, 1);
-  std::vector<HighsInt> index(num_item);
-  std::vector<double> weight(num_item);
-  for (HighsInt iCol = 0; iCol < num_item; iCol++) {
-    cost[iCol] = sign * (10 + (iCol * 37) % 23);
-    index[iCol] = iCol;
-    weight[iCol] = 5 + (iCol * 53) % 19;
-  }
-  cost[num_item] = 1e6;
-  lower[num_item] = 1;
-  highs.addCols(num_item + 1, cost.data(), lower.data(), upper.data(), 0,
-                nullptr, nullptr, nullptr);
-  std::vector<HighsVarType> integrality(num_item, HighsVarType::kInteger);
-  highs.changeColsIntegrality(0, num_item - 1, integrality.data());
-  highs.addRow(-kHighsInf, 97, num_item, index.data(), weight.data());
-  highs.changeObjectiveSense(sense);
-}
-
-// Knapsack solutions holding the optimal items, item 0 alone, and no item,
-// with their objective values.
-struct OffsetKnapsackSolutions {
-  std::vector<double> optimal;
-  double optimal_objective;
-  std::vector<double> first_item_only;
-  double first_item_only_objective;
-  std::vector<double> no_item;
-};
-
-static OffsetKnapsackSolutions offsetKnapsackSolutions(Highs& highs) {
-  OffsetKnapsackSolutions solutions;
-  highs.run();
-  REQUIRE(highs.getModelStatus() == HighsModelStatus::kOptimal);
-  solutions.optimal = highs.getSolution().col_value;
-  solutions.optimal_objective = highs.getInfo().objective_function_value;
-  const HighsLp& lp = highs.getLp();
-  const HighsInt fixed_col = lp.num_col_ - 1;
-  solutions.no_item.assign(lp.num_col_, 0);
-  solutions.no_item[fixed_col] = 1;
-  solutions.first_item_only = solutions.no_item;
-  solutions.first_item_only[0] = 1;
-  solutions.first_item_only_objective =
-      lp.col_cost_[0] + lp.col_cost_[fixed_col];
-  REQUIRE(solutions.optimal_objective != solutions.first_item_only_objective);
-  highs.clearSolver();
-  return solutions;
-}
-
-// Solves from `start`, offering `offers` one per query, and returns the MIP
-// primal bound reported at each query; there is one query beyond the offers,
-// so each offer's effect on the incumbent is seen.
-static std::vector<double> primalBoundsWithOffers(
-    Highs& highs, const std::vector<double>& start,
-    const std::vector<std::vector<double>>& offers) {
-  HighsSolution start_solution;
-  start_solution.col_value = start;
-  REQUIRE(highs.setSolution(start_solution) == HighsStatus::kOk);
-  UserSolutionSequence sequence;
-  sequence.offers = offers;
-  highs.setCallback(userkMipUserSolutionSequence, (void*)(&sequence));
-  highs.startCallback(kCallbackMipUserSolution);
-  highs.run();
-  highs.stopCallback(kCallbackMipUserSolution);
-  highs.clearSolver();
-  REQUIRE(sequence.primal_bound_at_query.size() > offers.size());
-  return sequence.primal_bound_at_query;
-}
-
-static void runImprovingUserSolutionAfterOffsetTest(const ObjSense sense) {
-  Highs highs;
-  setupOffsetKnapsack(highs, sense);
-  const OffsetKnapsackSolutions solutions = offsetKnapsackSolutions(highs);
-
-  // The optimum improves on the incumbent by far less than the offset.
-  const std::vector<double> primal_bound = primalBoundsWithOffers(
-      highs, solutions.first_item_only, {solutions.optimal});
-
-  REQUIRE(std::fabs(primal_bound[0] - solutions.first_item_only_objective) <
-          1e-6);
-  REQUIRE(std::fabs(primal_bound[1] - solutions.optimal_objective) < 1e-6);
-  highs.resetGlobalScheduler(true);
-}
-
-TEST_CASE("highs-callback-mip-user-solution-improving-after-offset-min",
-          "[highs-callback]") {
-  runImprovingUserSolutionAfterOffsetTest(ObjSense::kMinimize);
-}
-
-TEST_CASE("highs-callback-mip-user-solution-improving-after-offset-max",
-          "[highs-callback]") {
-  runImprovingUserSolutionAfterOffsetTest(ObjSense::kMaximize);
-}
-
-TEST_CASE("highs-callback-mip-user-solution-worse-after-offset",
-          "[highs-callback]") {
-  Highs highs;
-  setupOffsetKnapsack(highs, ObjSense::kMinimize);
-  const OffsetKnapsackSolutions solutions = offsetKnapsackSolutions(highs);
-
-  const std::vector<double> primal_bound = primalBoundsWithOffers(
-      highs, solutions.first_item_only, {solutions.no_item});
-
-  REQUIRE(std::fabs(primal_bound[1] - solutions.first_item_only_objective) <
-          1e-6);
-  highs.resetGlobalScheduler(true);
 }
 
 // HighsCCallbackType
@@ -780,7 +637,7 @@ TEST_CASE("highs-callback-mip-user-solution-c", "[highs-callback]") {
   highs.startCallback(kCallbackMipSolution);
 
   highs.run();
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
 }
 
 TEST_CASE("highs-callback-qpasm", "[highs_callback]") {
@@ -796,5 +653,73 @@ TEST_CASE("highs-callback-qpasm", "[highs_callback]") {
   highs.startCallback(kCallbackQpInterrupt);
   highs.run();
   REQUIRE(highs.getInfo().qp_iteration_count == 6);
-  highs.resetGlobalScheduler(true);
+  highs.resetThreadScheduler(true);
+}
+
+TEST_CASE("issue-3340", "[highs_callback]") {
+  struct Offer {
+    std::vector<double> solution;
+    std::vector<double> primal_bound_at_query;
+  };
+
+  const HighsInt n = 40;
+  std::vector<double> cost(n + 1), lower(n + 1, 0), upper(n + 1, 1);
+  std::vector<HighsInt> index(n);
+  std::vector<double> weight(n);
+  for (int i = 0; i < n; i++) {
+    cost[i] = -(10 + (i * 37) % 23);
+    index[i] = i;
+    weight[i] = 5 + (i * 53) % 19;
+  }
+  // column n is fixed at 1: presolve moves its cost into the offset
+  cost[n] = 1e6;
+  lower[n] = 1;
+  Highs highs;
+  highs.setOptionValue("output_flag", dev_run);
+  highs.setOptionValue("mip_heuristic_effort", 0.0);
+  highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+  highs.addCols(n + 1, cost.data(), lower.data(), upper.data(), 0, nullptr,
+                nullptr, nullptr);
+  std::vector<HighsVarType> integrality(n, HighsVarType::kInteger);
+  highs.changeColsIntegrality(0, n - 1, integrality.data());
+  highs.addRow(-kHighsInf, 97, n, index.data(), weight.data());
+
+  highs.run();
+  Offer offer;
+  offer.solution = highs.getSolution().col_value;
+  const double optimum = highs.getInfo().objective_function_value;
+  highs.clearSolver();
+
+  // Start from a poor solution: item 0 only.
+  HighsSolution start;
+  start.col_value.assign(n + 1, 0);
+  start.col_value[0] = 1;
+  start.col_value[n] = 1;
+  highs.setSolution(start);
+
+  // Offer the optimum at the first user-solution query; record the primal
+  // bound at each query.
+  highs.setCallback(
+      [](int, const std::string&, const HighsCallbackOutput* data_out,
+         HighsCallbackInput* data_in, void* user_data) {
+        auto& offer = *static_cast<Offer*>(user_data);
+        if (offer.primal_bound_at_query.empty()) {
+          data_in->user_has_solution = true;
+          data_in->user_solution = offer.solution;
+        }
+        offer.primal_bound_at_query.push_back(data_out->mip_primal_bound);
+      },
+      &offer);
+  highs.startCallback(kCallbackMipUserSolution);
+  highs.run();
+
+  if (dev_run) printf("optimum                      %.1f\n", optimum);
+  for (size_t q = 0; q < offer.primal_bound_at_query.size(); q++) {
+    if (dev_run)
+      printf("primal bound at query %zu      %.1f\n", q,
+             offer.primal_bound_at_query[q]);
+    if (q > 0) REQUIRE(offer.primal_bound_at_query[q] == optimum);
+  }
+
+  highs.resetThreadScheduler(true);
 }

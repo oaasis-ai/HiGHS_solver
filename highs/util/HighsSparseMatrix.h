@@ -29,6 +29,17 @@ const HighsInt kDebugReportAll = -1;
 class HighsSparseMatrix {
  public:
   HighsSparseMatrix() { clear(); }
+
+  // Explicitly default the special member functions so that the move
+  // operations (relied on by getRowwise, getColwise, ensureRowwise,
+  // ensureColwise) can't silently vanish if a copy operation or the destructor
+  // is ever customized in the future.
+  HighsSparseMatrix(const HighsSparseMatrix&) = default;
+  HighsSparseMatrix& operator=(const HighsSparseMatrix&) = default;
+  HighsSparseMatrix(HighsSparseMatrix&&) = default;
+  HighsSparseMatrix& operator=(HighsSparseMatrix&&) = default;
+  ~HighsSparseMatrix() = default;
+
   MatrixFormat format_;
   HighsInt num_col_;
   HighsInt num_row_;
@@ -49,6 +60,9 @@ class HighsSparseMatrix {
   void setFormat(const MatrixFormat desired_format);
   void ensureColwise();
   void ensureRowwise();
+  HighsSparseMatrix getRowwise() const;
+  HighsSparseMatrix getColwise() const;
+  HighsSparseMatrix oppositeFormat() const;
 
   void addVec(const HighsInt num_nz, const HighsInt* index, const double* value,
               const double multiple = 1);

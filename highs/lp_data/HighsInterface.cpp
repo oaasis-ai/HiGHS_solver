@@ -452,9 +452,6 @@ HighsStatus Highs::addColsInterface(
                    nullptr),
       return_status, "assessBounds");
   if (return_status == HighsStatus::kError) return return_status;
-  // Append the columns to the LP vectors and matrix
-  appendColsToLpVectors(lp, ext_num_new_col, local_colCost, local_colLower,
-                        local_colUpper);
   // Form a column-wise HighsSparseMatrix of the new matrix columns so
   // that is easy to handle and, if there are nonzeros, it can be
   // normalised
@@ -484,7 +481,11 @@ HighsStatus Highs::addColsInterface(
     // matrix columns
     local_a_matrix.start_.assign(ext_num_new_col + 1, 0);
   }
-  // Append the columns to LP matrix
+  assert(return_status != HighsStatus::kError);
+  // Now that data for new columns has been assessed and no errors can
+  // occur, append the columns to the LP vectors and matrix
+  appendColsToLpVectors(lp, ext_num_new_col, local_colCost, local_colLower,
+                        local_colUpper);
   lp.a_matrix_.addCols(local_a_matrix);
   if (lp_has_scaling) {
     // Extend the column scaling factors
@@ -584,9 +585,6 @@ HighsStatus Highs::addRowsInterface(HighsInt ext_num_new_row,
                    nullptr),
       return_status, "assessBounds");
   if (return_status == HighsStatus::kError) return return_status;
-  // Append the rows to the LP vectors
-  appendRowsToLpVectors(lp, ext_num_new_row, local_rowLower, local_rowUpper);
-
   // Form a row-wise HighsSparseMatrix of the new matrix rows so that
   // is easy to handle and, if there are nonzeros, it can be
   // normalised
@@ -616,7 +614,10 @@ HighsStatus Highs::addRowsInterface(HighsInt ext_num_new_row,
     // rows
     local_ar_matrix.start_.assign(ext_num_new_row + 1, 0);
   }
-  // Append the rows to LP matrix
+  assert(return_status != HighsStatus::kError);
+  // Now that data for new rows has been assessed and no errors can
+  // occur, append the rows to the LP vectors and matrix
+  appendRowsToLpVectors(lp, ext_num_new_row, local_rowLower, local_rowUpper);
   lp.a_matrix_.addRows(local_ar_matrix);
   if (lp_has_scaling) {
     // Extend the row scaling factors
@@ -1006,7 +1007,7 @@ HighsStatus Highs::changeColBoundsInterface(
   }
   // Determine any implications for simplex data
   ekk_instance_.updateStatus(LpAction::kNewBounds);
-  return HighsStatus::kOk;
+  return return_status;
 }
 
 HighsStatus Highs::changeRowBoundsInterface(
@@ -1057,7 +1058,7 @@ HighsStatus Highs::changeRowBoundsInterface(
   }
   // Determine any implications for simplex data
   ekk_instance_.updateStatus(LpAction::kNewBounds);
-  return HighsStatus::kOk;
+  return return_status;
 }
 
 // Change a single coefficient in the matrix
@@ -1589,6 +1590,8 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
   HighsHessian hessian;
   bool solve_relaxation;
   std::string presolve;
+  std::string solver;
+  bool allow_unbounded_or_infeasible;
   bool solve_feasibility_problem = false;
   const bool is_qp = model_.isQp();
 
@@ -1606,14 +1609,18 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
       }
       highsLogUser(options_.log_options, HighsLogType::kInfo,
                    "Solving LP to try to compute dual ray\n");
-      // Save the column costs, integrality, any Hessian and the
-      // presolve setting
+      // Save the column costs, any Hessian, the relaxation, presolve
+      // and solver settings, so that the feasibility problem is
+      // solved to yield a basic solution
       col_cost = lp.col_cost_;
       if (is_qp) hessian = model_.hessian_;
-      this->getOptionValue("presolve", presolve);
-      this->getOptionValue("solve_relaxation", solve_relaxation);
+      solve_relaxation = this->options_.solve_relaxation;
+      presolve = this->options_.presolve;
+      solver = this->options_.solver;
+      allow_unbounded_or_infeasible =
+          this->options_.allow_unbounded_or_infeasible;
       solve_feasibility_problem = true;
-      // Zero the costs, integrality and Hessian
+      // Zero the costs and Hessian
       std::vector<double> zero_costs;
       zero_costs.assign(lp.num_col_, 0);
       // Take a copy of the primal ray record, since this will be
@@ -1629,9 +1636,22 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
         HighsHessian zero_hessian;
         this->passHessian(zero_hessian);
       }
-      this->setOptionValue("presolve", kHighsOffString);
-      this->setOptionValue("solve_relaxation", true);
+      //
+      this->options_.solve_relaxation = true;
+      this->options_.presolve = kHighsOffString;
+      this->options_.solver = kSimplexString;
+      this->options_.allow_unbounded_or_infeasible = false;
       HighsStatus call_status = this->run();
+      // Restore the column costs, any Hessian, the relaxation,
+      // presolve and solver settings
+      this->options_.solve_relaxation = solve_relaxation;
+      this->options_.presolve = presolve;
+      this->options_.solver = solver;
+      this->options_.allow_unbounded_or_infeasible =
+          allow_unbounded_or_infeasible;
+
+      lp.col_cost_ = col_cost;
+      if (is_qp) model_.hessian_ = hessian;
       if (call_status != HighsStatus::kOk) return_status = call_status;
       has_dual_ray = ekk_instance_.dual_ray_record_.index != kNoRayIndex;
       has_invert = ekk_instance_.status_.has_invert;
@@ -1676,10 +1696,7 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
     // information has been lost. Reverting the objective function via
     // Highs calls clears info_, so better to just copy the data
     // directly and set the info_ entries that are no longer valid
-    lp.col_cost_ = col_cost;
-    if (is_qp) model_.hessian_ = hessian;
-    this->setOptionValue("presolve", presolve);
-    this->setOptionValue("solve_relaxation", solve_relaxation);
+    //
     // The relaxation for an infeasible MIP may be feasible - so no
     // ray is generated - so make sure (#2415) that the primal
     // solution status is reset
@@ -1689,7 +1706,8 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
     this->info_.objective_function_value = 0;
     this->info_.invalidateDualKkt();
     if (has_dual_ray) {
-      assert(this->info_.num_primal_infeasibilities > 0);
+      assert(this->info_.num_primal_infeasibilities > 0 ||
+             this->info_.num_semi_infeasibilities > 0);
       assert(this->model_status_ == HighsModelStatus::kInfeasible);
     } else {
       // If someone has tried to get a dual ray for a feasible problem
@@ -1719,8 +1737,9 @@ HighsStatus Highs::getPrimalRayInterface(bool& has_primal_ray,
   assert(!lp.is_moved_);
   has_primal_ray = ekk_instance_.primal_ray_record_.index != kNoRayIndex;
 
-  std::string presolve;
   bool solve_relaxation;
+  std::string presolve;
+  std::string solver;
   bool allow_unbounded_or_infeasible;
   bool solve_unboundedness_problem = false;
 
@@ -1739,15 +1758,24 @@ HighsStatus Highs::getPrimalRayInterface(bool& has_primal_ray,
       }
       highsLogUser(options_.log_options, HighsLogType::kInfo,
                    "Solving LP to try to compute primal ray\n");
-      this->getOptionValue("presolve", presolve);
-      this->getOptionValue("solve_relaxation", solve_relaxation);
-      this->getOptionValue("allow_unbounded_or_infeasible",
-                           allow_unbounded_or_infeasible);
+      // Save the relaxation, presolve and solver settings
+      solve_relaxation = this->options_.solve_relaxation;
+      presolve = this->options_.presolve;
+      solver = this->options_.solver;
+      allow_unbounded_or_infeasible =
+          this->options_.allow_unbounded_or_infeasible;
       solve_unboundedness_problem = true;
-      this->setOptionValue("presolve", kHighsOffString);
-      this->setOptionValue("solve_relaxation", true);
-      this->setOptionValue("allow_unbounded_or_infeasible", false);
+      this->options_.solve_relaxation = true;
+      this->options_.presolve = kHighsOffString;
+      this->options_.solver = kSimplexString;
+      this->options_.allow_unbounded_or_infeasible = false;
       HighsStatus call_status = this->run();
+      // Restore the relaxation, presolve and solver settings
+      this->options_.solve_relaxation = solve_relaxation;
+      this->options_.presolve = presolve;
+      this->options_.solver = solver;
+      this->options_.allow_unbounded_or_infeasible =
+          allow_unbounded_or_infeasible;
       if (call_status != HighsStatus::kOk) return_status = call_status;
       has_primal_ray = ekk_instance_.primal_ray_record_.index != kNoRayIndex;
       has_invert = ekk_instance_.status_.has_invert;
@@ -1812,11 +1840,6 @@ HighsStatus Highs::getPrimalRayInterface(bool& has_primal_ray,
       this->info_.dual_solution_status = SolutionStatus::kSolutionStatusNone;
       this->info_.invalidateDualKkt();
     }
-    // Restore the option values
-    this->setOptionValue("presolve", presolve);
-    this->setOptionValue("solve_relaxation", solve_relaxation);
-    this->setOptionValue("allow_unbounded_or_infeasible",
-                         allow_unbounded_or_infeasible);
     if (has_primal_ray) {
       assert(is_mip || this->info_.num_dual_infeasibilities > 0);
       assert(this->model_status_ == HighsModelStatus::kUnbounded);
@@ -3163,7 +3186,17 @@ HighsStatus Highs::userScaleSolution(HighsUserScaleData& data,
   info_.objective_function_value *= (bound_scale_value * objective_scale_value);
   if (has_integrality)
     info_.mip_dual_bound *= (bound_scale_value * objective_scale_value);
+
+  const double primal_feasibility_tolerance =
+      options_.primal_feasibility_tolerance;
+  // Remember to check primal feasibility using the tolerance used
+  // when the model was solved
+  if (model_.isMip() && !options_.solve_relaxation)
+    options_.primal_feasibility_tolerance =
+        options_.getMipPrimalFeasibilityTolerance();
   getKktFailures(options_, model_, solution_, basis_, info_);
+  // Restore the primal feasibility tolerance
+  options_.primal_feasibility_tolerance = primal_feasibility_tolerance;
   return reportKktFailures(model_.lp_, options_, info_,
                            "After removing user scaling")
              ? HighsStatus::kWarning

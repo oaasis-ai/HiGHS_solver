@@ -942,6 +942,7 @@ HighsStatus Highs::writeIisModel(const std::string& filename) {
 
 HighsStatus Highs::writeLocalModel(HighsModel& model,
                                    const std::string& filename) {
+  this->logHeader();
   HighsStatus return_status = HighsStatus::kOk;
   HighsStatus call_status;
   HighsLp& lp = model.lp_;
@@ -1072,7 +1073,7 @@ HighsStatus Highs::presolve() {
     model_presolve_status_ = HighsPresolveStatus::kNotReduced;
   } else {
     const bool force_presolve = true;
-    // make sure global scheduler is initialized before calling presolve, since
+    // make sure scheduler is initialized before calling presolve, since
     // MIP presolve may use parallelism
     //
     return_status = this->initializeMultiThreading();
@@ -1824,6 +1825,7 @@ HighsStatus Highs::calledOptimizeModel() {
         // Presolve has returned kUnboundedOrInfeasible, but HiGHS
         // can't return this. Use primal simplex solver on the original
         // LP
+        HighsStatus save_return_status = return_status;
         HighsOptions save_options = options_;
         options_.solver = "simplex";
         options_.simplex_strategy = kSimplexStrategyPrimal;
@@ -1833,11 +1835,30 @@ HighsStatus Highs::calledOptimizeModel() {
                      this_solve_original_lp_time);
         // Recover the options
         options_ = save_options;
-        if (return_status == HighsStatus::kError)
-          return returnFromOptimizeModel(return_status, undo_mods);
-        info_.valid = true;
+        // Primal simplex doesn't necessarily resolve the
+        // kUnboundedOrInfeasible case, as it may time out or reach
+        // the iteration count (#3383), or even fail
         assert(model_status_ == HighsModelStatus::kInfeasible ||
-               model_status_ == HighsModelStatus::kUnbounded);
+               model_status_ == HighsModelStatus::kUnbounded ||
+               model_status_ == HighsModelStatus::kTimeLimit ||
+               model_status_ == HighsModelStatus::kIterationLimit ||
+               model_status_ == HighsModelStatus::kInterrupt);
+        const bool resolved = model_status_ == HighsModelStatus::kInfeasible ||
+                              model_status_ == HighsModelStatus::kUnbounded;
+        if (resolved) {
+          info_.valid = true;
+        } else {
+          // Unresolved, so return with result from presolve
+          highsLogUser(log_options, HighsLogType::kInfo,
+                       "Unable to resolve whether LP is unbounded or "
+                       "infeasible: primal simplex yields model status of %s\n",
+                       modelStatusToString(model_status_).c_str());
+
+          model_status_ = HighsModelStatus::kUnboundedOrInfeasible;
+          return_status = save_return_status;
+          setHighsModelStatusAndClearSolutionAndBasis(
+              HighsModelStatus::kUnboundedOrInfeasible);
+        }
         return returnFromOptimizeModel(return_status, undo_mods);
       }
       case HighsPresolveStatus::kTimeout: {
@@ -3135,11 +3156,8 @@ HighsStatus Highs::changeColsIntegrality(const HighsInt num_set_entries,
     return analyseSetCreateError(options_.log_options, "changeColsIntegrality",
                                  create_error, true, num_set_entries,
                                  local_set.data(), model_.lp_.num_col_);
-  HighsStatus call_status =
+  HighsStatus return_status =
       changeIntegralityInterface(index_collection, local_integrality.data());
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeIntegrality");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3151,11 +3169,8 @@ HighsStatus Highs::changeColsIntegrality(const HighsInt* mask,
   const bool create_error = create(index_collection, mask, model_.lp_.num_col_);
   assert(!create_error);
   (void)create_error;
-  HighsStatus call_status =
+  HighsStatus return_status =
       changeIntegralityInterface(index_collection, integrality);
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeIntegrality");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3177,10 +3192,7 @@ HighsStatus Highs::changeColsCost(const HighsInt from_col,
                  int(from_col), int(to_col), int(model_.lp_.num_col_));
     return HighsStatus::kError;
   }
-  HighsStatus call_status = changeCostsInterface(index_collection, cost);
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeCosts");
+  HighsStatus return_status = changeCostsInterface(index_collection, cost);
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3205,11 +3217,8 @@ HighsStatus Highs::changeColsCost(const HighsInt num_set_entries,
     return analyseSetCreateError(options_.log_options, "changeColsCost",
                                  create_error, true, num_set_entries,
                                  local_set.data(), model_.lp_.num_col_);
-  HighsStatus call_status =
+  HighsStatus return_status =
       changeCostsInterface(index_collection, local_cost.data());
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeCosts");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3220,10 +3229,7 @@ HighsStatus Highs::changeColsCost(const HighsInt* mask, const double* cost) {
   const bool create_error = create(index_collection, mask, model_.lp_.num_col_);
   assert(!create_error);
   (void)create_error;
-  HighsStatus call_status = changeCostsInterface(index_collection, cost);
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeCosts");
+  HighsStatus return_status = changeCostsInterface(index_collection, cost);
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3247,11 +3253,8 @@ HighsStatus Highs::changeColsBounds(const HighsInt from_col,
                  int(from_col), int(to_col), int(model_.lp_.num_col_));
     return HighsStatus::kError;
   }
-  HighsStatus call_status =
+  HighsStatus return_status =
       changeColBoundsInterface(index_collection, lower, upper);
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeColBounds");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3284,11 +3287,8 @@ HighsStatus Highs::changeColsBounds(const HighsInt num_set_entries,
     return analyseSetCreateError(options_.log_options, "changeColsBounds",
                                  create_error, true, num_set_entries,
                                  local_set.data(), model_.lp_.num_col_);
-  HighsStatus call_status = changeColBoundsInterface(
+  HighsStatus return_status = changeColBoundsInterface(
       index_collection, local_lower.data(), local_upper.data());
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeColBounds");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3300,11 +3300,8 @@ HighsStatus Highs::changeColsBounds(const HighsInt* mask, const double* lower,
   const bool create_error = create(index_collection, mask, model_.lp_.num_col_);
   assert(!create_error);
   (void)create_error;
-  HighsStatus call_status =
+  HighsStatus return_status =
       changeColBoundsInterface(index_collection, lower, upper);
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeColBounds");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3328,11 +3325,8 @@ HighsStatus Highs::changeRowsBounds(const HighsInt from_row,
                  int(from_row), int(to_row), int(model_.lp_.num_row_));
     return HighsStatus::kError;
   }
-  HighsStatus call_status =
+  HighsStatus return_status =
       changeRowBoundsInterface(index_collection, lower, upper);
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeRowBounds");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3365,11 +3359,8 @@ HighsStatus Highs::changeRowsBounds(const HighsInt num_set_entries,
     return analyseSetCreateError(options_.log_options, "changeRowsBounds",
                                  create_error, true, num_set_entries,
                                  local_set.data(), model_.lp_.num_row_);
-  HighsStatus call_status = changeRowBoundsInterface(
+  HighsStatus return_status = changeRowBoundsInterface(
       index_collection, local_lower.data(), local_upper.data());
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeRowBounds");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3381,11 +3372,8 @@ HighsStatus Highs::changeRowsBounds(const HighsInt* mask, const double* lower,
   const bool create_error = create(index_collection, mask, model_.lp_.num_row_);
   assert(!create_error);
   (void)create_error;
-  HighsStatus call_status =
+  HighsStatus return_status =
       changeRowBoundsInterface(index_collection, lower, upper);
-  HighsStatus return_status = HighsStatus::kOk;
-  return_status = interpretCallStatus(options_.log_options, call_status,
-                                      return_status, "changeRowBounds");
   if (return_status == HighsStatus::kError) return HighsStatus::kError;
   return returnFromHighs(return_status);
 }
@@ -3752,6 +3740,7 @@ HighsStatus Highs::postsolve(const HighsSolution& solution,
 
 HighsStatus Highs::writeSolution(const std::string& filename,
                                  const HighsInt style) {
+  this->logHeader();
   HighsStatus return_status = HighsStatus::kOk;
   HighsStatus call_status;
   FILE* file;
@@ -4757,8 +4746,14 @@ HighsStatus Highs::returnFromOptimizeModel(const HighsStatus run_return_status,
           (options_.solver == kPdlpString) || model_.isMip()) {
         assert(return_status == HighsStatus::kOk);
       } else {
-        // This model status is not permitted unless IPM is run without
-        // crossover, or if PDLP is used
+        // This model status is not permitted unless IPM is run
+        // without crossover, if PDLP is used, or if the problem is a
+        // MIP. This latter qualification was introduced in the case
+        // where MIP presolve identifies kUnboundedOrInfeasible and
+        // the problem is not then solved to resolve the model
+        // status. However, as exposed by #3383, it's possible that a
+        // LP relaxation yields kUnboundedOrInfeasible because the
+        // simplex iteration limit is zero.
         highsLogUser(
             options_.log_options, HighsLogType::kError,
             "returnFromHighs: HighsModelStatus::kUnboundedOrInfeasible is not "
@@ -5029,16 +5024,16 @@ HighsStatus Highs::initializeMultiThreading() {
     highsLogDev(
         log_options, HighsLogType::kWarning,
         "Thread count (%d) exceeds physical cores (%d); consider reducing "
-        "threads or calling Highs::resetGlobalScheduler()\n",
+        "threads or calling Highs::resetThreadScheduler()\n",
         static_cast<int>(this->max_threads_),
         static_cast<int>(available_cores));
   if (this->options_.threads != 0 &&
       this->max_threads_ != this->options_.threads) {
     highsLogUser(
         log_options, HighsLogType::kError,
-        "Option 'threads' is set to %d but global scheduler has already been "
+        "Option 'threads' is set to %d but the scheduler has already been "
         "initialized to use %d threads. The previous scheduler instance can "
-        "be destroyed by calling Highs::resetGlobalScheduler().\n",
+        "be destroyed by calling Highs::resetThreadScheduler().\n",
         int(options_.threads), int(this->max_threads_));
     return HighsStatus::kError;
   }
@@ -5054,8 +5049,14 @@ HighsStatus Highs::initializeMultiThreading() {
   return HighsStatus::kOk;
 }
 
-void Highs::resetGlobalScheduler(bool blocking) {
+void Highs::resetThreadScheduler(bool blocking) {
   HighsTaskExecutor::shutdown(blocking);
+}
+
+void Highs::resetGlobalScheduler(bool blocking) {
+  // Deprecated in favour of resetThreadScheduler().
+  // Cannot call deprecationMessage here.
+  resetThreadScheduler(blocking);
 }
 
 void Highs::initializeSingleThreadedProfiling(HighsProfiling* profiling) {
