@@ -291,7 +291,6 @@ const string kModelFileString = "model_file";
 const string kReadBasisFileString = "read_basis_file";
 const string kWriteBasisFileString = "write_basis_file";
 const string kPresolveString = "presolve";
-const string kPresolveLightString = "presolve_light";
 const string kSolverString = "solver";
 const string kParallelString = "parallel";
 const string kThreadsString = "threads";
@@ -373,6 +372,9 @@ struct HighsOptionsStruct {
   HighsInt user_bound_scale;
   HighsInt highs_debug_level;
   HighsInt highs_analysis_level;
+
+  HighsInt solver_select_strategy;
+  bool solver_select_require_basis;
   HighsInt simplex_strategy;
   HighsInt simplex_scale_strategy;
   HighsInt simplex_crash_strategy;
@@ -410,6 +412,7 @@ struct HighsOptionsStruct {
   HighsInt hipo_parallel_force;
   HighsInt hipo_parallel_forbid;
   bool hipo_serial_blas;
+  bool hipo_stop_if_no_memory;
 
   // Options for PDLP solver
   HighsInt pdlp_features_off;
@@ -444,7 +447,6 @@ struct HighsOptionsStruct {
   bool lp_presolve_requires_basis_postsolve;
   bool mps_parser_type_free;
   bool use_warm_start;
-  std::string presolve_light;
   bool write_matrix_image;
   bool write_hessian_image;
   HighsInt keep_n_rows;
@@ -458,6 +460,7 @@ struct HighsOptionsStruct {
   HighsInt max_dual_simplex_phase1_cleanup_level;
   HighsInt simplex_price_strategy;
   HighsInt simplex_unscaled_solution_strategy;
+  HighsInt presolve_mode;
   HighsInt presolve_reduction_limit;
   HighsInt restart_presolve_reduction_limit;
   HighsInt presolve_substitution_maxfillin;
@@ -571,6 +574,8 @@ struct HighsOptionsStruct {
         user_bound_scale(0),
         highs_debug_level(0),
         highs_analysis_level(0),
+        solver_select_strategy(0),
+        solver_select_require_basis(false),
         simplex_strategy(0),
         simplex_scale_strategy(0),
         simplex_crash_strategy(0),
@@ -601,6 +606,7 @@ struct HighsOptionsStruct {
         hipo_parallel_force(0),
         hipo_parallel_forbid(0),
         hipo_serial_blas(true),
+        hipo_stop_if_no_memory(false),
         pdlp_features_off(0),
         pdlp_iteration_limit(0),
         pdlp_scaling_mode(0),
@@ -625,7 +631,6 @@ struct HighsOptionsStruct {
         lp_presolve_requires_basis_postsolve(false),
         mps_parser_type_free(false),
         use_warm_start(true),
-        presolve_light(""),
         write_matrix_image(false),
         write_hessian_image(false),
         keep_n_rows(0),
@@ -639,6 +644,7 @@ struct HighsOptionsStruct {
         max_dual_simplex_phase1_cleanup_level(0),
         simplex_price_strategy(0),
         simplex_unscaled_solution_strategy(0),
+        presolve_mode(0),
         presolve_reduction_limit(0),
         restart_presolve_reduction_limit(0),
         presolve_substitution_maxfillin(0),
@@ -918,6 +924,27 @@ class HighsOptions : public HighsOptionsStruct {
         kHighsAnalysisLevelMax);
     records.push_back(record_int);
 
+    // Strategies 3 to 8 are for development, so aren't in the description.
+    // They can still be set, as can advanced options. See
+    // util/HighsSolverSelect.h
+    record_int = new OptionRecordInt(
+        "solver_select_strategy",
+        "Strategy for automatic LP solver selection when solver is "
+        "\"choose\" and, for LPs without a basis in the MIP solver, when "
+        "mip_lp_solver is \"choose\": 0 => Simplex only; 1 => "
+        "Fitted model on columns, rows and nonzeros; 2 => Fitted model on "
+        "ranked features",
+        advanced, &solver_select_strategy, 0, 0, 8);
+    records.push_back(record_int);
+
+    record_bool =
+        new OptionRecordBool("solver_select_require_basis",
+                             "Require a basis from automatic solver selection: "
+                             "simplex is used if the selected IPM solver "
+                             "doesn't yield one or reaches its iteration limit",
+                             now_advanced, &solver_select_require_basis, false);
+    records.push_back(record_bool);
+
     record_int = new OptionRecordInt(
         "simplex_strategy",
         "Strategy for simplex solver 0 => Choose; 1 => Dual (serial); 2 => "
@@ -1029,7 +1056,7 @@ class HighsOptions : public HighsOptionsStruct {
         "pretty = human-readable): "
         "-1 => HiGHS old raw (deprecated); 0 => HiGHS raw; "
         "1 => HiGHS pretty; 2 => Glpsol raw; 3 => Glpsol pretty; "
-        "4 => HiGHS sparse raw",
+        "4 => HiGHS sparse raw; 5 => HiGHS partial raw",
         advanced, &write_solution_style, kSolutionStyleMin, kSolutionStyleRaw,
         kSolutionStyleMax);
     records.push_back(record_int);
@@ -1117,6 +1144,13 @@ class HighsOptions : public HighsOptionsStruct {
         kWriteIisModelFileString, "Write IIS model file", advanced,
         &write_iis_model_file, kHighsFilenameDefault);
     records.push_back(record_string);
+
+    record_int = new OptionRecordInt(
+        "presolve_mode",
+        "Presolve mode 0 => default; 1 => initial sweep; 2 => light; 3 => full",
+        advanced, &presolve_mode, kPresolveModeMin, kPresolveModeDefault,
+        kPresolveModeMax);
+    records.push_back(record_int);
 
     record_bool = new OptionRecordBool(
         "mip_detect_symmetry", "Whether MIP symmetry should be detected",
@@ -1334,7 +1368,9 @@ class HighsOptions : public HighsOptionsStruct {
     record_string =
         new OptionRecordString(kMipLpSolverString,
                                "MIP LP solver: \"choose\", \"simplex\", "
-                               "\"ipm\", \"ipx\" or \"hipo\"",
+                               "\"ipm\", \"ipx\" or \"hipo\". Only "
+                               "\"choose\" allows solver_select_strategy to "
+                               "act",
                                advanced, &mip_lp_solver, kHighsChooseString);
     records.push_back(record_string);
 
@@ -1372,6 +1408,19 @@ class HighsOptions : public HighsOptionsStruct {
         advanced, &hipo_parallel_type, kHighsChooseString);
     records.push_back(record_string);
 
+    record_int = new OptionRecordInt(
+        "hipo_parallel_force", "Bit mask to force parallel techniques in HiPO",
+        advanced, &hipo_parallel_force, 0, 0,
+        static_cast<int>(hipo::ParallelTechnique::kMaxSum));
+    records.push_back(record_int);
+
+    record_int =
+        new OptionRecordInt("hipo_parallel_forbid",
+                            "Bit mask to forbid parallel techniques in HiPO",
+                            advanced, &hipo_parallel_forbid, 0, 0,
+                            static_cast<int>(hipo::ParallelTechnique::kMaxSum));
+    records.push_back(record_int);
+
     record_string = new OptionRecordString(
         kHipoOrderingString,
         "HiPO matrix reordering: \"choose\", \"metis\", \"amd\" or \"rcm\"",
@@ -1390,18 +1439,11 @@ class HighsOptions : public HighsOptionsStruct {
         advanced, &hipo_block_size, 0, 128, kHighsIInf);
     records.push_back(record_int);
 
-    record_int = new OptionRecordInt(
-        "hipo_parallel_force", "Bit mask to force parallel techniques in HiPO",
-        advanced, &hipo_parallel_force, 0, 0,
-        static_cast<int>(hipo::ParallelTechnique::kMaxSum));
-    records.push_back(record_int);
-
-    record_int =
-        new OptionRecordInt("hipo_parallel_forbid",
-                            "Bit mask to forbid parallel techniques in HiPO",
-                            advanced, &hipo_parallel_forbid, 0, 0,
-                            static_cast<int>(hipo::ParallelTechnique::kMaxSum));
-    records.push_back(record_int);
+    record_bool = new OptionRecordBool(
+        "hipo_stop_if_no_memory",
+        "Stop HiPO if its predicted memory use exceeds what is available",
+        now_advanced, &hipo_stop_if_no_memory, false);
+    records.push_back(record_bool);
 
     record_bool = new OptionRecordBool(
         "hipo_serial_blas",
@@ -1557,12 +1599,6 @@ class HighsOptions : public HighsOptionsStruct {
                                        "Use any warm start that is available",
                                        advanced, &use_warm_start, true);
     records.push_back(record_bool);
-
-    record_string = new OptionRecordString(
-        kPresolveLightString,
-        "Use only low-cost presolve rules: \"off\", \"choose\" or \"on\"",
-        advanced, &presolve_light, kHighsChooseString);
-    records.push_back(record_string);
 
     record_bool = new OptionRecordBool(
         "write_matrix_image",
@@ -1843,6 +1879,6 @@ bool solverValidForQp(const std::string& solver);
 
 bool useIpm(const std::string& solver);
 bool usePdlp(const std::string& solver);
+bool mayRequireDualPostsolve(const HighsOptions* options);
 bool mayRequireBasisPostsolve(const HighsOptions* options);
-bool mayRequirePrimalDualPostsolve(const HighsOptions* options);
 #endif

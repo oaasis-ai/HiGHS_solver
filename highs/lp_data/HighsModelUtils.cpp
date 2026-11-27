@@ -158,15 +158,15 @@ void writeModelBoundSolution(
     ss.str(std::string());
     std::string var_status_string =
         have_basis ? statusToString(status[ix], lower[ix], upper[ix]) : "";
-    ss << highsFormatToString("%9" HIGHSINT_FORMAT "   %4s %12g %12g", ix,
+    ss << highsFormatToString("%9" HIGHSINT_FORMAT "   %4s %12.6g %12.6g", ix,
                               var_status_string.c_str(), lower[ix], upper[ix]);
     if (have_primal) {
-      ss << highsFormatToString(" %12g", primal[ix]);
+      ss << highsFormatToString(" %12.6g", primal[ix]);
     } else {
       ss << "             ";
     }
     if (have_dual) {
-      ss << highsFormatToString(" %12g", dual[ix]);
+      ss << highsFormatToString(" %12.6g", dual[ix]);
     } else {
       ss << "             ";
     }
@@ -302,8 +302,7 @@ void writeModelSolution(FILE* file, const HighsLogOptions& log_options,
       highsFprintfString(file, log_options, "Infeasible\n");
     }
     writeModelObjective(file, log_options, model, solution.col_value);
-    if (model.isMip() && model_status == HighsModelStatus::kOptimal &&
-        info.mip_gap < kHighsInf)
+    if (model.isMip() && have_primal && info.mip_gap < kHighsInf)
       writeMipBoundGap(file, log_options, info.mip_dual_bound, info.mip_gap);
     writePrimalSolution(file, log_options, model.lp_, solution.col_value,
                         sparse, partial);
@@ -564,8 +563,7 @@ void writeSolutionFile(FILE* file, const HighsOptions& options,
                                           kHighsSolutionValueToStringTolerance);
     ss << highsFormatToString("Objective value: %s\n", obj_string.data());
     highsFprintfString(file, log_options, ss.str());
-    if (model.isMip() && model_status == HighsModelStatus::kOptimal &&
-        info.mip_gap < kHighsInf) {
+    if (model.isMip() && have_primal && info.mip_gap < kHighsInf) {
       // Possibly log the MIP bounds and gap
       auto mip_dual_bound_string = highsDoubleToString(
           info.mip_dual_bound, kHighsSolutionValueToStringTolerance);
@@ -1529,13 +1527,13 @@ std::string utilPresolveRuleTypeToString(const HighsInt rule_type) {
   } else if (rule_type == kPresolveRuleFixedCol) {
     return "Fixed column";
   } else if (rule_type == kPresolveRuleDominatedCol) {
-    return "Dominated col";
+    return "Dominated column";
   } else if (rule_type == kPresolveRuleForcingRow) {
     return "Forcing row";
   } else if (rule_type == kPresolveRuleForcingCol) {
-    return "Forcing col";
+    return "Forcing column";
   } else if (rule_type == kPresolveRuleFreeColSubstitution) {
-    return "Free col substitution";
+    return "Free column substitution";
   } else if (rule_type == kPresolveRuleDoubletonEquation) {
     return "Doubleton equation";
   } else if (rule_type == kPresolveRuleDependentEquations) {
@@ -1557,7 +1555,7 @@ std::string utilPresolveRuleTypeToString(const HighsInt rule_type) {
   } else if (rule_type == kPresolveRuleZeroCostSingleton) {
     return "Zero cost singleton";
   } else if (rule_type == kPresolveRuleColStuffing) {
-    return "Col stuffing";
+    return "Column stuffing";
   } else if (rule_type == kPresolveRuleDualFixProbing) {
     return "Dual-fixing probing";
   } else if (rule_type == kPresolveRuleInitialSweep) {
@@ -1565,7 +1563,7 @@ std::string utilPresolveRuleTypeToString(const HighsInt rule_type) {
   } else if (rule_type == kPresolveRuleFourierMotzkin) {
     return "Fourier-Motzkin";
   } else if (rule_type == kPresolveRuleWeaklyDominatedCol) {
-    return "Weakly dominated col";
+    return "Weakly dominated column";
   }
   assert(1 == 0);
   return "????";

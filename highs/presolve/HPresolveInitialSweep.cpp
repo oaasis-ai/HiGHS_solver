@@ -34,19 +34,24 @@ HPresolveInitialSweep::HPresolveInitialSweep(
 HPresolveInitialSweep::Result HPresolveInitialSweep::checkColBounds(
     HighsInt col, bool& isFixed) {
   double boundDiff = lp_.col_upper_[col] - lp_.col_lower_[col];
-  double max_abs_col_value = 0;
-  for (HighsInt iEl = lp_.a_matrix_.start_[col];
-       iEl < lp_.a_matrix_.start_[col + 1]; iEl++)
-    max_abs_col_value =
-        std::max(std::abs(lp_.a_matrix_.value_[iEl]), max_abs_col_value);
   isFixed = false;
   // Check for simple infeasibility in the original LP should
   // already have been carried out in
   // HPresolve::checkOriginalLpBounds()
   assert(boundDiff >= 0);
-  if (boundDiff <= primal_feastol_ &&
-      (boundDiff <= options_.small_matrix_value ||
-       max_abs_col_value * boundDiff <= primal_feastol_)) {
+  // With reference to #3768, fixing variables by rounding like this
+  //
+  // if (boundDiff <= primal_feastol &&
+  //    (boundDiff <= options->small_matrix_value ||
+  //     getMaxAbsColVal(col) * boundDiff <= primal_feastol)) {
+  //
+  // can lead to a feasible MIP being declared infeasible as a
+  // near-fixed column removed at a bound moves its rows, and such
+  // moves add up
+  //
+  // Requiring the bound difference to be non-positive cannot be
+  // incorrect. It just fixes fewer variables
+  if (boundDiff <= 0) {
     // check for unboundedness
     if (std::abs(lp_.col_lower_[col]) == kHighsInf)
       return Result::kDualInfeasible;
@@ -87,6 +92,7 @@ HPresolveInitialSweep::Result HPresolveInitialSweep::emptyCol(
   assert(fixval != kHighsInf);
   postsolve_stack.removedModelFixedCol(col, fixval, cost, col_nnz, nullptr,
                                        nullptr);
+  lp_.offset_ += cost * fixval;
   if (col == lp_.fme_obj_col_) lp_.fme_obj_col_ = -1;
   return Result::kOk;
 }
@@ -134,7 +140,7 @@ HPresolveInitialSweep::Result HPresolveInitialSweep::singletonRow(
   bool lowerTightened, upperTightened;
   SingletonRowResult sr = computeSingletonRowBounds(
       val, lp_.row_lower_[row], lp_.row_upper_[row], lp_.col_lower_[col],
-      lp_.col_upper_[col], primal_feastol_, getMaxAbsColVal(col),
+      lp_.col_upper_[col], primal_feastol_,
       lp_.integrality_[col] != HighsVarType::kContinuous, lb, ub,
       lowerTightened, upperTightened);
   if (sr == SingletonRowResult::kRedundant) {
@@ -212,12 +218,14 @@ HPresolveInitialSweep::Result HPresolveInitialSweep::run(
       // bounds, any names, and the matrix data. Also compute this
       // column's contribution to the implied row bounds.
       newColIndex[iCol] = num_col;
-      lp_.col_cost_[num_col] = lp_.col_cost_[iCol];
-      lp_.col_lower_[num_col] = lp_.col_lower_[iCol];
-      lp_.col_upper_[num_col] = lp_.col_upper_[iCol];
-      lp_.integrality_[num_col] = lp_.integrality_[iCol];
-      if (have_col_names)
-        lp_.col_names_[num_col] = std::move(lp_.col_names_[iCol]);
+      if (num_col < iCol) {
+        lp_.col_cost_[num_col] = lp_.col_cost_[iCol];
+        lp_.col_lower_[num_col] = lp_.col_lower_[iCol];
+        lp_.col_upper_[num_col] = lp_.col_upper_[iCol];
+        lp_.integrality_[num_col] = lp_.integrality_[iCol];
+        if (have_col_names)
+          lp_.col_names_[num_col] = std::move(lp_.col_names_[iCol]);
+      }
       HighsInt from_os = lp_.a_matrix_.start_[iCol];
       HighsInt new_col_start = nnz;
       for (HighsInt iEl = 0; iEl < col_nnz; iEl++) {
@@ -312,10 +320,12 @@ HPresolveInitialSweep::Result HPresolveInitialSweep::run(
         num_deleted_rows_++;
       } else {
         newRowIndex[iRow] = num_row;
-        lp_.row_lower_[num_row] = lp_.row_lower_[iRow];
-        lp_.row_upper_[num_row] = lp_.row_upper_[iRow];
-        if (have_row_names)
-          lp_.row_names_[num_row] = std::move(lp_.row_names_[iRow]);
+        if (num_row < iRow) {
+          lp_.row_lower_[num_row] = lp_.row_lower_[iRow];
+          lp_.row_upper_[num_row] = lp_.row_upper_[iRow];
+          if (have_row_names)
+            lp_.row_names_[num_row] = std::move(lp_.row_names_[iRow]);
+        }
         num_row++;
       }
     }

@@ -13,9 +13,12 @@
 #include <cassert>
 #include <cstdio>
 
+#include "model/HighsHessianUtils.h"
+#include "util/HighsMatrixUtils.h"
 #include "util/HighsRandom.h"
 
 void HighsHessian::clear() {
+  this->name_ = "Hessian";
   this->dim_ = 0;
   this->start_.clear();
   this->index_.clear();
@@ -312,12 +315,6 @@ HighsCDouble HighsHessian::objectiveCDoubleValue(
   return objective_function_value;
 }
 
-bool HighsHessian::empty() const {
-  if (dim_ <= 0) return true;
-  if (this->isOracle() && this->oracle_.dim_ <= 0) return true;
-  return false;
-}
-
 bool HighsHessian::isDiagonal() const {
   if (this->isOracle()) {
     assert(111 == 888);
@@ -400,6 +397,35 @@ HighsHessian HighsHessian::toSquare() const {
     }
   }
   return square_hessian;
+}
+
+bool HighsHessian::legalDimensions(const HighsLogOptions& log_options) const {
+  assert(!this->isOracle());
+  // Assess the Hessian dimensions and vector sizes
+  std::vector<HighsInt> hessian_p_end;
+  const bool partitioned = false;
+  return legalMatrixDimensions(log_options, "HighsHessian", this->name_,
+                               this->dim_, partitioned, this->start_,
+                               hessian_p_end, this->index_, this->value_);
+}
+
+HighsStatus HighsHessian::trimDimensions(const HighsLogOptions& log_options) {
+  assert(!this->isOracle());
+  std::vector<HighsInt> hessian_p_end;
+  const bool partitioned = false;
+  return trimMatrixDimensions(log_options, "HighsHessian", this->name_,
+                              this->dim_, partitioned, this->start_,
+                              hessian_p_end, this->index_, this->value_);
+}
+
+HighsStatus HighsHessian::assess(const HighsOptions& options,
+                                 const std::string* col_names) {
+  return assessHessian(*this, options, col_names);
+}
+
+void HighsHessian::negate() {
+  if (this->isOracle()) this->oracle_.multiplier_ *= -1;
+  for (HighsInt iEl = 0; iEl < this->numNz(); iEl++) this->value_[iEl] *= -1;
 }
 
 HighsStatus HighsHessian::checkOracle(const HighsLogOptions& log_options,
@@ -789,11 +815,11 @@ void HessianOracle::product(const HighsInt x_num_entries,
     assert(x_num_entries > 0);
     this->call_(kHessianOracleCallTypeProduct, &x_num_entries, x_index, x_value,
                 nullptr, nullptr, hessian_x_value, this->data_);
+    this->scaleAndShift(&x_num_entries, x_index, x_value, hessian_x_value);
   } else {
     // Passed x_index as null pointer, so assume full x
     this->product(x_value, hessian_x_value);
   }
-  this->scaleAndShift(&x_num_entries, x_index, x_value, hessian_x_value);
 }
 
 void HessianOracle::scaleAndShift(const HighsInt* x_num_entries,

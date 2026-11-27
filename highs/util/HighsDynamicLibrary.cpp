@@ -11,13 +11,65 @@
 
 #include "util/HighsDynamicLibrary.h"
 
+#include "util/stringutil.h"
+
 #if defined(_WIN32) || defined(_WIN64)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef NOGDI
+#define NOGDI
+#endif
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#endif
+
+#if defined(_WIN32) || defined(_WIN64)
+// any address inside this module, to find the module's directory
+static void moduleAnchor() {}
+
+// Directory of the module holding HiGHS, with a trailing backslash, or empty.
+// Wide APIs, since the path (e.g. the NuGet cache under the user profile) may
+// be longer than MAX_PATH or not representable in the ANSI code page
+static std::wstring moduleDirectory() {
+  HMODULE self = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCWSTR>(&moduleAnchor), &self))
+    return L"";
+  std::wstring module_path(MAX_PATH, L'\0');
+  for (;;) {
+    const DWORD len = GetModuleFileNameW(
+        self, &module_path[0], static_cast<DWORD>(module_path.size()));
+    if (len == 0) return L"";
+    if (len < module_path.size()) {
+      module_path.resize(len);
+      break;
+    }
+    // truncated: retry with a larger buffer
+    module_path.resize(2 * module_path.size());
+  }
+  const size_t slash = module_path.find_last_of(L'\\');
+  return slash == std::wstring::npos ? L"" : module_path.substr(0, slash + 1);
+}
+
+// Paths are UTF-8, per Highs::initializeExtras. Text that is not valid UTF-8
+// is read as ANSI, as LoadLibraryExA did: non-ASCII ANSI is rarely valid UTF-8
+static std::wstring toWide(const std::string& s) {
+  UINT code_page = CP_UTF8;
+  int n = MultiByteToWideChar(code_page, MB_ERR_INVALID_CHARS, s.c_str(), -1,
+                              nullptr, 0);
+  if (n <= 0) {
+    code_page = CP_ACP;
+    n = MultiByteToWideChar(code_page, 0, s.c_str(), -1, nullptr, 0);
+  }
+  if (n <= 0) return L"";
+  std::wstring w(n, L'\0');
+  MultiByteToWideChar(code_page, 0, s.c_str(), -1, &w[0], n);
+  w.resize(n - 1);  // drop the terminating null
+  return w;
+}
 #endif
 
 HighsDynamicLibrary::~HighsDynamicLibrary() { unload(); }
@@ -27,8 +79,28 @@ bool HighsDynamicLibrary::load(const std::string& filename,
   unload();
 
 #if defined(_WIN32) || defined(_WIN64)
-  std::string full_path = path + (path.empty() ? "" : "\\") + filename;
-  handle_ = static_cast<void*>(LoadLibraryA(full_path.c_str()));
+  const std::wstring absolute_filename =
+      toWide(path + (path.empty() ? "" : "\\") + filename);
+
+  // allow application directory if no path is specified, otherwise use DLL load
+  // directory and absolute path
+  DWORD flags = (path.empty() ? LOAD_LIBRARY_SEARCH_APPLICATION_DIR
+                              : LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+  handle_ =
+      static_cast<void*>(LoadLibraryExW(absolute_filename.c_str(), nullptr,
+                                        LOAD_LIBRARY_SEARCH_SYSTEM32 | flags));
+
+  // then the directory of the module holding HiGHS, which the application
+  // directory search misses when they differ, e.g. runtimes/<rid>/native for a
+  // .NET app. (macOS searches only this directory, via @loader_path.)
+  if (!handle_ && path.empty()) {
+    const std::wstring module_dir = moduleDirectory();
+    if (!module_dir.empty())
+      handle_ = static_cast<void*>(LoadLibraryExW(
+          (module_dir + toWide(filename)).c_str(), nullptr,
+          LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR));
+  }
+
   if (!handle_) {
     DWORD error = GetLastError();
     char* message = nullptr;
@@ -38,6 +110,7 @@ bool HighsDynamicLibrary::load(const std::string& filename,
                    nullptr);
     status_ = "Failed to load " + filename + ": " +
               (message ? message : "Unknown error");
+    rtrim(status_);  // FormatMessage ends its text with a line break
     if (message) LocalFree(message);
     return false;
   }

@@ -61,7 +61,7 @@ class HighsTaskExecutor {
 
     int numTries = 16 * (numWorkers - 1);
 
-    auto tStart = std::chrono::high_resolution_clock::now();
+    auto tStart = std::chrono::steady_clock::now();
 
     while (true) {
       for (int s = 0; s < numTries; ++s) {
@@ -71,10 +71,9 @@ class HighsTaskExecutor {
 
       if (!workerBunk->haveJobs.load(std::memory_order_relaxed)) break;
 
-      auto numMicroSecs =
-          std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::high_resolution_clock::now() - tStart)
-              .count();
+      auto numMicroSecs = std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - tStart)
+                              .count();
 
       if (numMicroSecs < HighsSchedulerConstants::kMicroSecsBeforeGlobalSync)
         numTries *= 2;
@@ -153,6 +152,8 @@ class HighsTaskExecutor {
     return threadLocalWorkerDeque();
   }
 
+  static bool isRunning() { return threadLocalExecutorHandle().ptr != nullptr; }
+
   static int getNumWorkerThreads() {
     return threadLocalWorkerDeque()->getNumWorkers();
   }
@@ -172,8 +173,11 @@ class HighsTaskExecutor {
     auto& executorHandle = threadLocalExecutorHandle();
 
     if (executorHandle.ptr != nullptr) {
+      const bool isMain = executorHandle.isMain;
       executorHandle.ptr->stopWorkerThreads(blocking);
       executorHandle.dispose();
+      // Avoid leaving a dangling deque pointer on the main thread
+      if (isMain) threadLocalWorkerDeque() = nullptr;
     }
   }
 
@@ -184,7 +188,7 @@ class HighsTaskExecutor {
       const int numWorkers = localDeque->getNumWorkers();
       int numTries = HighsSchedulerConstants::kNumTryFac * (numWorkers - 1);
 
-      auto tStart = std::chrono::high_resolution_clock::now();
+      auto tStart = std::chrono::steady_clock::now();
 
       while (true) {
         for (int s = 0; s < numTries; ++s) {
@@ -197,7 +201,7 @@ class HighsTaskExecutor {
 
         auto numMicroSecs =
             std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::high_resolution_clock::now() - tStart)
+                std::chrono::steady_clock::now() - tStart)
                 .count();
 
         if (numMicroSecs < HighsSchedulerConstants::kMicroSecsBeforeSleep)

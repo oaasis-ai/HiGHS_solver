@@ -349,59 +349,43 @@ bool HPresolve::yieldsImpliedUpperBound(HighsInt row, double val) const {
 }
 
 bool HPresolve::isImpliedEquationAtLower(HighsInt row) const {
-  // if the implied lower bound on a row dual is strictly positive then the row
-  // is an implied equation (using its lower bound) due to complementary
-  // slackness
+  return isImpliedEquationAtLower(row, implRowDualLower[row]);
+}
+
+bool HPresolve::isImpliedEquationAtLower(HighsInt row,
+                                         double implDualLower) const {
+  // if the given implied lower bound on a row dual is strictly positive then
+  // the row is an implied equation (using its lower bound) due to
+  // complementary slackness
   return model->row_lower_[row] != -kHighsInf &&
-         implRowDualLower[row] > options->dual_feasibility_tolerance;
+         implDualLower > options->dual_feasibility_tolerance;
 }
 
 bool HPresolve::isImpliedEquationAtUpper(HighsInt row) const {
-  // if the implied upper bound on a row dual is strictly negative then the row
-  // is an implied equation (using its upper bound) due to complementary
-  // slackness
+  return isImpliedEquationAtUpper(row, implRowDualUpper[row]);
+}
+
+bool HPresolve::isImpliedEquationAtUpper(HighsInt row,
+                                         double implDualUpper) const {
+  // if the given implied upper bound on a row dual is strictly negative then
+  // the row is an implied equation (using its upper bound) due to
+  // complementary slackness
   return model->row_upper_[row] != kHighsInf &&
-         implRowDualUpper[row] < -options->dual_feasibility_tolerance;
+         implDualUpper < -options->dual_feasibility_tolerance;
 }
 
 void HPresolve::chooseRules() {
   const bool silent = silentLog();
-  // By default all presolve rules are allowed
-  this->allow_rule_.assign(kPresolveRuleCount, true);
 
-  // All rules can be switched off, although the most fundamental can
-  // only be switched off in initial sweep
-  auto allowedOffInInitialSweep = [&](const HighsInt rule_type) {
-    if (rule_type == kPresolveRuleEmptyRow) return true;
-    if (rule_type == kPresolveRuleSingletonRow) return true;
-    if (rule_type == kPresolveRuleRedundantRow) return true;
-    if (rule_type == kPresolveRuleEmptyCol) return true;
-    if (rule_type == kPresolveRuleFixedCol) return true;
-    return false;
+  auto setRulesForFullMode = [&]() {
+    // All rules on in full mode
+    this->allow_rule_.assign(kPresolveRuleCount, true);
   };
 
-  auto logRule = [&](const HighsInt rule_type) {
-    highsLogUser(options->log_options, HighsLogType::kInfo,
-                 " %1s Rule %2d (set bit %2d = %7d): %s\n",
-                 allowedOffInInitialSweep(rule_type) ? "*" : " ",
-                 int(rule_type), int(rule_type), int(1 << rule_type),
-                 utilPresolveRuleTypeToString(rule_type).c_str());
-  };
-
-  if (!silent && options->log_dev_level) {
-    // State which rules can be off, and what bit to set
-    highsLogUser(options->log_options, HighsLogType::kInfo,
-                 "Permitted suppression of presolve rules via "
-                 "presolve_rule_off option:\n");
-    for (HighsInt rule_type = kPresolveRuleMin; rule_type < kPresolveRuleCount;
-         rule_type++)
-      logRule(rule_type);
-    highsLogUser(options->log_options, HighsLogType::kInfo,
-                 " * Only in initial sweep\n");
-  }
-
-  if (options->presolve_light == kHighsOnString) {
-    // Switch off the rules not used in presolve_light mode
+  auto setRulesForLightMode = [&]() {
+    // All rules on by default
+    setRulesForFullMode();
+    // Switch off the rules not used in presolve light
     allow_rule_[kPresolveRuleDominatedCol] = false;
     allow_rule_[kPresolveRuleDependentEquations] = false;
     allow_rule_[kPresolveRuleDependentFreeCols] = false;
@@ -414,69 +398,141 @@ void HPresolve::chooseRules() {
     allow_rule_[kPresolveRuleZeroCostSingleton] = false;
     allow_rule_[kPresolveRuleColStuffing] = false;
     allow_rule_[kPresolveRuleFourierMotzkin] = false;
+  };
+
+  auto setRulesForInitialSweepMode = [&]() {
+    // All rules off by default
+    allow_rule_.assign(kPresolveRuleCount, false);
+    // Switch on the rules used in initial sweep
+    allow_rule_[kPresolveRuleEmptyRow] = true;
+    allow_rule_[kPresolveRuleSingletonRow] = true;
+    allow_rule_[kPresolveRuleRedundantRow] = true;
+    allow_rule_[kPresolveRuleEmptyCol] = true;
+    allow_rule_[kPresolveRuleFixedCol] = true;
+    // Switch on initial sweep!
+    allow_rule_[kPresolveRuleInitialSweep] = true;
+  };
+
+  // All rules can be switched off, although the most fundamental can
+  // only be switched off in initial sweep
+  auto allowedOffInInitialSweep = [&](const HighsInt rule) {
+    if (rule == kPresolveRuleEmptyRow) return true;
+    if (rule == kPresolveRuleSingletonRow) return true;
+    if (rule == kPresolveRuleRedundantRow) return true;
+    if (rule == kPresolveRuleEmptyCol) return true;
+    if (rule == kPresolveRuleFixedCol) return true;
+    return false;
+  };
+
+  auto logRule = [&](const HighsInt rule) {
+    highsLogUser(options->log_options, HighsLogType::kInfo,
+                 " %1s Rule %2d (set bit %2d = %7d): %s\n",
+                 allowedOffInInitialSweep(rule) ? "*" : " ", int(rule),
+                 int(rule), int(1 << rule),
+                 utilPresolveRuleTypeToString(rule).c_str());
+  };
+
+  auto ruleOffForPostsolve = [&](const std::string& postsolve_type,
+                                 const HighsInt rule) {
+    // If the rule is already switched off (by user action etc) then
+    // no action is needed
+    if (!allow_rule_[rule]) return;
+    allow_rule_[rule] = false;
+    if (!silent && options->log_dev_level)
+      highsLogUser(options->log_options, HighsLogType::kWarning,
+                   "May require %s postsolve, so switched off \"%s\" rule\n",
+                   postsolve_type.c_str(),
+                   utilPresolveRuleTypeToString(rule).c_str());
+  };
+
+  if (!silent && options->log_dev_level) {
+    // State which rules can be off, and what bit to set
+    highsLogUser(options->log_options, HighsLogType::kInfo,
+                 "Permitted suppression of presolve rules via "
+                 "presolve_rule_off option:\n");
+    for (HighsInt rule = kPresolveRuleMin; rule < kPresolveRuleCount; rule++)
+      logRule(rule);
+    highsLogUser(options->log_options, HighsLogType::kInfo,
+                 " * Only in initial sweep\n");
   }
 
+  // Set the pre-defined rules on/off according to the mode
+  if (options->presolve_mode == kPresolveModeDefault) {
+    // By default all presolve rules are allowed, but subsets for
+    // specific solvers (esp PDLP) can be set
+    if (usePdlp(options->solver)) {
+      setRulesForLightMode();
+    } else {
+      setRulesForFullMode();
+    }
+  } else if (options->presolve_mode == kPresolveModeInitialSweep) {
+    setRulesForInitialSweepMode();
+  } else if (options->presolve_mode == kPresolveModeLight) {
+    setRulesForLightMode();
+  } else if (options->presolve_mode == kPresolveModeFull) {
+    setRulesForFullMode();
+  } else {
+    highsLogUser(options->log_options, HighsLogType::kError,
+                 "Unrecognised presolve mode %d\n",
+                 int(options->presolve_mode));
+    assert(1 == 0);
+  }
+  // Possibly switch off specific rules defined by the user via
+  // presolve_rule_off
   if (options->presolve_rule_off) {
-    // Some presolve rules are off
-    //
-    // Transform options->presolve_rule_off into logical settings in
+    // Transform presolve_rule_off into logical settings in
     // allow_rule_[*], commenting on the rules switched off
     if (!silent)
       highsLogUser(options->log_options, HighsLogType::kInfo,
                    "Presolve rules switched off:\n");
+    // Keep track of whether to add the qualifier "* Only in initial
+    // sweep" to the logging!
     bool off_in_initial_sweep = false;
-    for (HighsInt rule_type = kPresolveRuleMin; rule_type < kPresolveRuleCount;
-         rule_type++) {
-      HighsInt bit = 1 << rule_type;
-      // Identify whether this rule is allowed
+    for (HighsInt rule = kPresolveRuleMin; rule < kPresolveRuleCount; rule++) {
+      HighsInt bit = 1 << rule;
       if (!(options->presolve_rule_off & bit)) continue;
-      if (rule_type != kPresolveRuleDominatedCol) {
-        off_in_initial_sweep =
-            allowedOffInInitialSweep(rule_type) || off_in_initial_sweep;
-        allow_rule_[rule_type] = false;
-        if (!silent) logRule(rule_type);
-      } else {
-        // This is a rule that cannot be switched off so, if an
-        // attempt is made, don't allow it to be off and possibly
-        // comment negatively
-        if (!silent)
-          highsLogUser(options->log_options, HighsLogType::kWarning,
-                       "Cannot disallow rule %2d (bit %2d = %5d): %s\n",
-                       int(rule_type), int(rule_type), int(bit),
-                       utilPresolveRuleTypeToString(rule_type).c_str());
-      }
+      off_in_initial_sweep =
+          allowedOffInInitialSweep(rule) || off_in_initial_sweep;
+      allow_rule_[rule] = false;
+      if (!silent) logRule(rule);
     }
     if (!silent && off_in_initial_sweep)
       highsLogUser(options->log_options, HighsLogType::kInfo,
                    " * Only in initial sweep\n");
   }
 
+  // Finally switch off rules that are incompatible with dual or basis
+  // postsolve
   may_require_basis_postsolve_ = false;
-  may_require_primal_dual_postsolve_ = false;
+  may_require_dual_postsolve_ = false;
+
   if (mipsolver == nullptr) {
-    // Record whether one or both of basis and primal-dual postsolve
-    // may be required, and switch off rules that are correspondingly
+    // Record whether one or both of dual and basis postsolve may be
+    // required, and switch off rules that are correspondingly
     // incompatible
+    if (mayRequireDualPostsolve(options)) {
+      may_require_dual_postsolve_ = true;
+      // Cannot use weakly dominated column rule (see
+      // test-weakly-dominated-column-dual-postsolve)
+      ruleOffForPostsolve("dual", kPresolveRuleWeaklyDominatedCol);
+      // Cannot use kPresolveRuleDualFixing rule (see
+      // test-dual-fixing-dual-postsolve)
+      ruleOffForPostsolve("dual", kPresolveRuleDualFixing);
+      // Cannot use kPresolveRuleZeroCostSingleton (see
+      // hipo-ipx-pdlp-no-crossover)
+      ruleOffForPostsolve("dual", kPresolveRuleZeroCostSingleton);
+    }
     if (mayRequireBasisPostsolve(options)) {
       may_require_basis_postsolve_ = true;
       // Cannot use sparsify or any parallel row rule using
       // EqualityRowAddition(s). Latter are avoided logically in
       // HPresolve::detectParallelRowsAndCols
-      allow_rule_[kPresolveRuleSparsify] = false;
+      ruleOffForPostsolve("basis", kPresolveRuleSparsify);
     }
-    if (mayRequirePrimalDualPostsolve(options)) {
-      may_require_primal_dual_postsolve_ = true;
-      // Cannot use weakly dominated column rule (see
-      // test-weakly-dominated-column-primal-dual-postsolve)
-      allow_rule_[kPresolveRuleWeaklyDominatedCol] = false;
-      // Cannot use kPresolveRuleDualFixing rule (see
-      // test-dual-fixing-primal-dual-postsolve)
-      allow_rule_[kPresolveRuleDualFixing] = false;
-    }
-    if (may_require_basis_postsolve_ || may_require_primal_dual_postsolve_) {
-      // Cannot use dominated column rule for either basis or
-      // primal-dual postsolve (see issue-3342)
-      allow_rule_[kPresolveRuleDominatedCol] = false;
+    if (may_require_dual_postsolve_ || may_require_basis_postsolve_) {
+      // Cannot use dominated column rule for either dual or basis
+      // postsolve (see issue-3342)
+      ruleOffForPostsolve("dual or basis", kPresolveRuleDominatedCol);
     }
   }
   // If dominated column rule is off, weakly dominated column rule
@@ -831,9 +887,39 @@ void HPresolve::resetColImpliedBoundsDerivedFromRow(HighsInt row) {
   std::set<HighsInt> affectedCols;
   affectedCols.swap(colImplSourceByRow[row]);
   for (const HighsInt& col : affectedCols) {
+    // the implied bounds may already have been reset in a cascade of an
+    // earlier reset in this loop
+    if (colLowerSource[col] != row && colUpperSource[col] != row) continue;
     // set implied bounds to infinite values if they were deduced from the
     // given row
     resetColImpliedBounds(col, row);
+  }
+}
+
+void HPresolve::resetColImpliedBoundsDerivedFromRowSide(HighsInt row,
+                                                        bool isLowerSide,
+                                                        HighsInt skipCol) {
+  // the lower (upper) side of a row, row_lower <= sum_j a_ij x_j (sum_j a_ij
+  // x_j <= row_upper), yields lower (upper) bounds on x_j for positive
+  // coefficients and upper (lower) bounds for negative coefficients, using the
+  // maximal (minimal) activity of the other columns. when this activity is
+  // relaxed because the bound of the column skipCol is relaxed, the implied
+  // column bounds derived from this side are reset. this also holds for an
+  // implied equation, which uses the same activity with the other row bound.
+  // the implied bounds of skipCol do not depend on its own bound and remain
+  // valid. a relaxed row bound is not handled here, since for an implied
+  // equation it affects both sides of the row.
+  if (colImplSourceByRow[row].empty()) return;
+  // walk the row rather than colImplSourceByRow[row], since the sign of the
+  // coefficient is needed
+  for (const HighsSliceNonzero& nonzero : getRowVector(row)) {
+    HighsInt col = nonzero.index();
+    if (col == skipCol) continue;
+    if ((nonzero.value() > 0) == isLowerSide) {
+      if (colLowerSource[col] == row) changeImplColLower(col, -kHighsInf, -1);
+    } else {
+      if (colUpperSource[col] == row) changeImplColUpper(col, kHighsInf, -1);
+    }
   }
 }
 
@@ -844,6 +930,10 @@ void HPresolve::resetRowDualImpliedBoundsDerivedFromCol(HighsInt col) {
   std::set<HighsInt> affectedRows;
   affectedRows.swap(implRowDualSourceByCol[col]);
   for (const HighsInt& row : affectedRows) {
+    // the implied bounds may already have been reset in a cascade of an
+    // earlier reset in this loop
+    if (rowDualLowerSource[row] != col && rowDualUpperSource[row] != col)
+      continue;
     // set implied bounds to infinite values if they were deduced from the
     // given column
     resetRowDualImpliedBounds(row, col);
@@ -880,33 +970,26 @@ void HPresolve::resetRowDualImpliedBoundsIfDualSideLost(HighsInt col,
 void HPresolve::matrixNonZeroChanged(HighsInt row, HighsInt col, double oldCoef,
                                      double newCoef, bool rowIsDeleted,
                                      bool colIsDeleted) {
-  if (!colIsDeleted) {
-    // update dual activity; relaxed activity bound invalidates derived implied
-    // bounds
-    if (!impliedDualRowBounds.implBndsValidAfterCoefChange(col, row, oldCoef,
-                                                           newCoef))
-      resetRowDualImpliedBoundsDerivedFromCol(col);
-    // not relaxed; only reset if sourced from this column
-    else if (rowDualLowerSource[row] == col || rowDualUpperSource[row] == col)
-      resetRowDualImpliedBounds(row, col);
-  } else {
-    // col is deleted; unconditionally reset derived implied bounds
-    resetRowDualImpliedBoundsDerivedFromCol(col);
-  }
+  // update the dual and the primal activity first, since the resets below may
+  // change implied bounds in a cascade (primal and dual), which requires
+  // activities that are consistent with the modified matrix. a deleted column
+  // (row) or a relaxed activity bound invalidates all derived implied bounds
+  const bool resetAllDerivedFromCol =
+      colIsDeleted || !impliedDualRowBounds.implBndsValidAfterCoefChange(
+                          col, row, oldCoef, newCoef);
+  const bool resetAllDerivedFromRow =
+      rowIsDeleted || !impliedRowBounds.implBndsValidAfterCoefChange(
+                          row, col, oldCoef, newCoef);
 
-  if (!rowIsDeleted) {
-    // update primal activity; relaxed activity bound invalidates derived
-    // implied bounds
-    if (!impliedRowBounds.implBndsValidAfterCoefChange(row, col, oldCoef,
-                                                       newCoef))
-      resetColImpliedBoundsDerivedFromRow(row);
-    // not relaxed; only reset if sourced from this row
-    else if (colLowerSource[col] == row || colUpperSource[col] == row)
-      resetColImpliedBounds(col, row);
-  } else {
-    // row is deleted; unconditionally reset derived implied bounds
-    resetColImpliedBoundsDerivedFromRow(row);
-  }
+  if (resetAllDerivedFromCol) resetRowDualImpliedBoundsDerivedFromCol(col);
+  // not relaxed; only reset if sourced from this column
+  else if (rowDualLowerSource[row] == col || rowDualUpperSource[row] == col)
+    resetRowDualImpliedBounds(row, col);
+
+  if (resetAllDerivedFromRow) resetColImpliedBoundsDerivedFromRow(row);
+  // not relaxed; only reset if sourced from this row
+  else if (colLowerSource[col] == row || colUpperSource[col] == row)
+    resetColImpliedBounds(col, row);
 
   // modifications to row invalidate lifting opportunities
   clearLiftingOpportunities(row);
@@ -938,7 +1021,8 @@ void HPresolve::changeRowLower(HighsInt row, double newLower,
   }
 
   // tightening preserves validity of column implied bounds; only reset on
-  // loosening
+  // loosening. all implied bounds derived from the row are reset, since an
+  // implied equation uses the lower bound for both sides of the row
   if (newLower < oldLower) resetColImpliedBoundsDerivedFromRow(row);
   if (mipsolver != nullptr) mipsolver->mipdata_->implications.rowModified(row);
   markChangedRow(row);
@@ -967,7 +1051,8 @@ void HPresolve::changeRowUpper(HighsInt row, double newUpper,
   }
 
   // tightening preserves validity of column implied bounds; only reset on
-  // loosening
+  // loosening. all implied bounds derived from the row are reset, since an
+  // implied equation uses the upper bound for both sides of the row
   if (newUpper > oldUpper) resetColImpliedBoundsDerivedFromRow(row);
   if (mipsolver != nullptr) mipsolver->mipdata_->implications.rowModified(row);
   markChangedRow(row);
@@ -1012,6 +1097,18 @@ void HPresolve::shrinkProblem(HighsPostsolveStack& postsolve_stack) {
   if (!hasPresolveDataStructures()) return;
   assert(colDeleted.size() == static_cast<size_t>(oldNumCol));
   assert(rowDeleted.size() == static_cast<size_t>(oldNumRow));
+#ifndef NDEBUG
+  // the clique table has to be up to date: a column in a clique is a binary
+  // column of the problem, otherwise a reduction that deleted the column or
+  // changed its meaning has not updated the clique table
+  if (presolveCliqueTable.isActive()) {
+    for (HighsInt col = 0; col != oldNumCol; ++col)
+      assert(!presolveCliqueTable.isColInClique(col) ||
+             (!colDeleted[col] &&
+              model->integrality_[col] != HighsVarType::kContinuous &&
+              model->col_lower_[col] == 0.0 && model->col_upper_[col] == 1.0));
+  }
+#endif
   model->num_col_ = 0;
   model->num_row_ = 0;
   std::vector<HighsInt> newColIndex(oldNumCol);
@@ -1266,8 +1363,12 @@ void HPresolve::addToMatrix(const HighsInt row, const HighsInt col,
     if (std::abs(sum) <= options->small_matrix_value) {
       unlink(pos);
     } else {
-      matrixNonZeroChanged(row, col, Avalue[pos], sum, false, false);
+      // store the new coefficient before the activities are updated, since
+      // the resets in matrixNonZeroChanged may update implied bounds in a
+      // cascade, which requires the modified matrix
+      const double oldCoef = Avalue[pos];
       Avalue[pos] = sum;
+      matrixNonZeroChanged(row, col, oldCoef, sum, false, false);
     }
   }
 }
@@ -1414,9 +1515,7 @@ void HPresolve::markColDeleted(HighsInt col) {
   colDeleted[col] = true;
   ++numDeletedCols;
   if (col == model->fme_obj_col_) model->fme_obj_col_ = -1;
-  if (mipsolver != nullptr && mipsolver->mipdata_->cliquesExtracted) {
-    presolveCliqueTable.eliminateCol(col);
-  }
+  presolveCliqueTable.eliminateCol(col);
 }
 
 HPresolve::Result HPresolve::changeColUpper(HighsInt col, double newUpper) {
@@ -1428,10 +1527,6 @@ HPresolve::Result HPresolve::changeColUpper(HighsInt col, double newUpper) {
   double oldUpper = model->col_upper_[col];
   model->col_upper_[col] = newUpper;
 
-  // a tighter upper bound may no longer be strictly implied; then the <= side
-  // of the dual constraint is lost
-  resetRowDualImpliedBoundsIfDualSideLost(col, false);
-
   HPRESOLVE_CHECKED_CALL(checkColBounds(col));
 
   for (const HighsSliceNonzero& nonzero : getColumnVector(col)) {
@@ -1439,6 +1534,22 @@ HPresolve::Result HPresolve::changeColUpper(HighsInt col, double newUpper) {
                                      oldUpper);
     markChangedRow(nonzero.index());
   }
+
+  // the following resets are done after the primal activities are updated,
+  // since they may change the implied bounds of this column in a cascade
+
+  // a relaxed upper bound increases (decreases) the maximal (minimal) activity
+  // of the row for a positive (negative) coefficient, which invalidates the
+  // implied bounds of the other columns derived from the lower (upper) side of
+  // the row
+  if (newUpper > oldUpper)
+    for (const HighsSliceNonzero& nonzero : getColumnVector(col))
+      resetColImpliedBoundsDerivedFromRowSide(nonzero.index(),
+                                              nonzero.value() > 0, col);
+
+  // a tighter upper bound may no longer be strictly implied; then the <= side
+  // of the dual constraint is lost
+  resetRowDualImpliedBoundsIfDualSideLost(col, false);
   if (mipsolver != nullptr &&
       model->col_lower_[col] == model->col_upper_[col]) {
     HPRESOLVE_CHECKED_CALL(
@@ -1456,10 +1567,6 @@ HPresolve::Result HPresolve::changeColLower(HighsInt col, double newLower) {
   double oldLower = model->col_lower_[col];
   model->col_lower_[col] = newLower;
 
-  // a tighter lower bound may no longer be strictly implied; then the >= side
-  // of the dual constraint is lost
-  resetRowDualImpliedBoundsIfDualSideLost(col, true);
-
   HPRESOLVE_CHECKED_CALL(checkColBounds(col));
 
   for (const HighsSliceNonzero& nonzero : getColumnVector(col)) {
@@ -1467,6 +1574,22 @@ HPresolve::Result HPresolve::changeColLower(HighsInt col, double newLower) {
                                      oldLower);
     markChangedRow(nonzero.index());
   }
+
+  // the following resets are done after the primal activities are updated,
+  // since they may change the implied bounds of this column in a cascade
+
+  // a relaxed lower bound decreases (increases) the minimal (maximal) activity
+  // of the row for a positive (negative) coefficient, which invalidates the
+  // implied bounds of the other columns derived from the upper (lower) side of
+  // the row
+  if (newLower < oldLower)
+    for (const HighsSliceNonzero& nonzero : getColumnVector(col))
+      resetColImpliedBoundsDerivedFromRowSide(nonzero.index(),
+                                              nonzero.value() < 0, col);
+
+  // a tighter lower bound may no longer be strictly implied; then the >= side
+  // of the dual constraint is lost
+  resetRowDualImpliedBoundsIfDualSideLost(col, true);
   if (mipsolver != nullptr &&
       model->col_lower_[col] == model->col_upper_[col]) {
     HPRESOLVE_CHECKED_CALL(
@@ -1493,9 +1616,19 @@ HPresolve::Result HPresolve::checkColBounds(HighsInt col, bool* isFixed) {
   assert(!colDeleted[col]);
   double boundDiff = model->col_upper_[col] - model->col_lower_[col];
   if (isFixed != nullptr) *isFixed = false;
-  if (boundDiff <= primal_feastol &&
-      (boundDiff <= options->small_matrix_value ||
-       getMaxAbsColVal(col) * boundDiff <= primal_feastol)) {
+  // With reference to #3768, fixing variables by rounding like this
+  //
+  // if (boundDiff <= primal_feastol &&
+  //    (boundDiff <= options->small_matrix_value ||
+  //     getMaxAbsColVal(col) * boundDiff <= primal_feastol)) {
+  //
+  // can lead to a feasible MIP being declared infeasible as a
+  // near-fixed column removed at a bound moves its rows, and such
+  // moves add up
+  //
+  // Requiring the bound difference to be non-positive cannot be
+  // incorrect. It just fixes fewer variables
+  if (boundDiff <= 0) {
     // check for primal infeasibility
     if (boundDiff < -primal_feastol) return Result::kPrimalInfeasible;
     // check for unboundedness
@@ -1563,24 +1696,25 @@ void HPresolve::changeImplColUpper(HighsInt col, double newUpper,
   // update implied bound
   implColUpper[col] = newUpper;
 
-  // if the implied upper bound was relaxed, the upper bound may no longer be
-  // strictly implied; then the <= side of the dual constraint is lost
-  resetRowDualImpliedBoundsIfDualSideLost(col, false);
+  // update the primal activities unless the old and the new implied bound are
+  // not better than the upper bound
+  if (newImpliedFree ||
+      std::min(oldImplUpper, newUpper) < model->col_upper_[col]) {
+    for (const HighsSliceNonzero& nonzero : getColumnVector(col)) {
+      impliedRowBounds.updatedImplVarUpper(
+          nonzero.index(), col, nonzero.value(), oldImplUpper, oldUpperSource);
+      if (newImpliedFree && isDualImpliedFree(nonzero.index()))
+        substitutionOpportunities.emplace_back(nonzero.index(), col);
 
-  // if the old and the new implied bound are not better than the upper bound,
-  // nothing needs to be updated
-  if (!newImpliedFree &&
-      std::min(oldImplUpper, newUpper) >= model->col_upper_[col])
-    return;
-
-  for (const HighsSliceNonzero& nonzero : getColumnVector(col)) {
-    impliedRowBounds.updatedImplVarUpper(nonzero.index(), col, nonzero.value(),
-                                         oldImplUpper, oldUpperSource);
-    if (newImpliedFree && isDualImpliedFree(nonzero.index()))
-      substitutionOpportunities.emplace_back(nonzero.index(), col);
-
-    markChangedRow(nonzero.index());
+      markChangedRow(nonzero.index());
+    }
   }
+
+  // if the implied upper bound was relaxed, the upper bound may no longer be
+  // strictly implied; then the <= side of the dual constraint is lost. this is
+  // done after the primal activities are updated, since the reset may change
+  // the implied column bounds again
+  resetRowDualImpliedBoundsIfDualSideLost(col, false);
 }
 
 void HPresolve::changeImplColLower(HighsInt col, double newLower,
@@ -1611,24 +1745,25 @@ void HPresolve::changeImplColLower(HighsInt col, double newLower,
   // update implied bound
   implColLower[col] = newLower;
 
-  // if the implied lower bound was relaxed, the lower bound may no longer be
-  // strictly implied; then the >= side of the dual constraint is lost
-  resetRowDualImpliedBoundsIfDualSideLost(col, true);
+  // update the primal activities unless the old and the new implied bound are
+  // not better than the lower bound
+  if (newImpliedFree ||
+      std::max(oldImplLower, newLower) > model->col_lower_[col]) {
+    for (const HighsSliceNonzero& nonzero : getColumnVector(col)) {
+      impliedRowBounds.updatedImplVarLower(
+          nonzero.index(), col, nonzero.value(), oldImplLower, oldLowerSource);
+      if (newImpliedFree && isDualImpliedFree(nonzero.index()))
+        substitutionOpportunities.emplace_back(nonzero.index(), col);
 
-  // if the old and the new implied bound are not better than the lower bound,
-  // nothing needs to be updated
-  if (!newImpliedFree &&
-      std::max(oldImplLower, newLower) <= model->col_lower_[col])
-    return;
-
-  for (const HighsSliceNonzero& nonzero : getColumnVector(col)) {
-    impliedRowBounds.updatedImplVarLower(nonzero.index(), col, nonzero.value(),
-                                         oldImplLower, oldLowerSource);
-    if (newImpliedFree && isDualImpliedFree(nonzero.index()))
-      substitutionOpportunities.emplace_back(nonzero.index(), col);
-
-    markChangedRow(nonzero.index());
+      markChangedRow(nonzero.index());
+    }
   }
+
+  // if the implied lower bound was relaxed, the lower bound may no longer be
+  // strictly implied; then the >= side of the dual constraint is lost. this is
+  // done after the primal activities are updated, since the reset may change
+  // the implied column bounds again
+  resetRowDualImpliedBoundsIfDualSideLost(col, true);
 }
 
 void HPresolve::changeImplRowDualUpper(HighsInt row, double newUpper,
@@ -1651,6 +1786,16 @@ void HPresolve::changeImplRowDualUpper(HighsInt row, double newUpper,
   bool newDualImplied =
       !isDualImpliedFree(row) && isDualImpliedLeq(row, newUpper);
 
+  // while the row is an implied equation at its upper bound, implied column
+  // bounds are also derived with the upper bound as the lower side of the row
+  // (see checkUpdateColImpliedBounds). when the row is no longer an implied
+  // equation, these bounds may be invalid and are reset at the end, after the
+  // dual activities are updated, since the reset may change the implied row
+  // dual bounds again
+  bool lostImpliedEquation = !isEquation(row) &&
+                             isImpliedEquationAtUpper(row) &&
+                             !isImpliedEquationAtUpper(row, newUpper);
+
   // remember the source of this upper bound, so that we can correctly identify
   // weak domination
   if (oldUpperSource != originCol) {
@@ -1664,18 +1809,19 @@ void HPresolve::changeImplRowDualUpper(HighsInt row, double newUpper,
   // update implied bound
   implRowDualUpper[row] = newUpper;
 
-  // nothing needs to be updated
-  if (!newDualImplied && std::min(oldImplUpper, newUpper) >= rowDualUpper[row])
-    return;
+  // update the dual activities unless nothing needs to be updated
+  if (newDualImplied || std::min(oldImplUpper, newUpper) < rowDualUpper[row]) {
+    for (const HighsSliceNonzero& nonzero : getRowVector(row)) {
+      impliedDualRowBounds.updatedImplVarUpper(
+          nonzero.index(), row, nonzero.value(), oldImplUpper, oldUpperSource);
+      markChangedCol(nonzero.index());
 
-  for (const HighsSliceNonzero& nonzero : getRowVector(row)) {
-    impliedDualRowBounds.updatedImplVarUpper(
-        nonzero.index(), row, nonzero.value(), oldImplUpper, oldUpperSource);
-    markChangedCol(nonzero.index());
-
-    if (newDualImplied && isImpliedFree(nonzero.index()))
-      substitutionOpportunities.emplace_back(row, nonzero.index());
+      if (newDualImplied && isImpliedFree(nonzero.index()))
+        substitutionOpportunities.emplace_back(row, nonzero.index());
+    }
   }
+
+  if (lostImpliedEquation) resetColImpliedBoundsDerivedFromRow(row);
 }
 
 void HPresolve::changeImplRowDualLower(HighsInt row, double newLower,
@@ -1698,6 +1844,16 @@ void HPresolve::changeImplRowDualLower(HighsInt row, double newLower,
   bool newDualImplied =
       !isDualImpliedFree(row) && isDualImpliedGeq(row, newLower);
 
+  // while the row is an implied equation at its lower bound, implied column
+  // bounds are also derived with the lower bound as the upper side of the row
+  // (see checkUpdateColImpliedBounds). when the row is no longer an implied
+  // equation, these bounds may be invalid and are reset at the end, after the
+  // dual activities are updated, since the reset may change the implied row
+  // dual bounds again
+  bool lostImpliedEquation = !isEquation(row) &&
+                             isImpliedEquationAtLower(row) &&
+                             !isImpliedEquationAtLower(row, newLower);
+
   // remember the source of this lower bound, so that we can correctly identify
   // weak domination
   if (oldLowerSource != originCol) {
@@ -1711,18 +1867,19 @@ void HPresolve::changeImplRowDualLower(HighsInt row, double newLower,
   // update implied bound
   implRowDualLower[row] = newLower;
 
-  // nothing needs to be updated
-  if (!newDualImplied && std::max(oldImplLower, newLower) <= rowDualLower[row])
-    return;
+  // update the dual activities unless nothing needs to be updated
+  if (newDualImplied || std::max(oldImplLower, newLower) > rowDualLower[row]) {
+    for (const HighsSliceNonzero& nonzero : getRowVector(row)) {
+      impliedDualRowBounds.updatedImplVarLower(
+          nonzero.index(), row, nonzero.value(), oldImplLower, oldLowerSource);
+      markChangedCol(nonzero.index());
 
-  for (const HighsSliceNonzero& nonzero : getRowVector(row)) {
-    impliedDualRowBounds.updatedImplVarLower(
-        nonzero.index(), row, nonzero.value(), oldImplLower, oldLowerSource);
-    markChangedCol(nonzero.index());
-
-    if (newDualImplied && isImpliedFree(nonzero.index()))
-      substitutionOpportunities.emplace_back(row, nonzero.index());
+      if (newDualImplied && isImpliedFree(nonzero.index()))
+        substitutionOpportunities.emplace_back(row, nonzero.index());
+    }
   }
+
+  if (lostImpliedEquation) resetColImpliedBoundsDerivedFromRow(row);
 }
 
 HPresolve::Result HPresolve::scaleMIP(HighsPostsolveStack& postsolve_stack) {
@@ -1948,6 +2105,10 @@ HPresolve::Result HPresolve::transformColumn(
   if (mipsolver != nullptr)
     mipsolver->mipdata_->implications.columnTransformed(col, scale, constant);
 
+  // entries of a binary x in the clique table would refer to x, not to x'. a
+  // non-binary x is kept, since x' may be binary (colPresolve shift)
+  if (isBinary(col)) presolveCliqueTable.eliminateCol(col);
+
   postsolve_stack.linearTransform(col, scale, constant);
 
   // new variable x' has the following bounds:
@@ -2047,11 +2208,8 @@ void HPresolve::scaleStoredRow(HighsInt row, double scale, bool integral) {
   rowDualLower[row] /= std::copysign(1.0, scale);
   rowDualUpper[row] /= std::copysign(1.0, scale);
 
-  for (size_t j = 0; j < rowpositions.size(); ++j) {
+  for (size_t j = 0; j < rowpositions.size(); ++j)
     Avalue[rowpositions[j]] *= scale;
-    if (std::abs(Avalue[rowpositions[j]]) <= options->small_matrix_value)
-      unlink(rowpositions[j]);
-  }
 
   impliedRowBounds.sumScaled(row, scale);
   if (scale < 0) {
@@ -2061,13 +2219,20 @@ void HPresolve::scaleStoredRow(HighsInt row, double scale, bool integral) {
     std::swap(model->row_lower_[row], model->row_upper_[row]);
   }
 
+  // remove tiny coefficients only after the row is completely scaled, since
+  // removing a non-zero updates the activities with the scaled coefficient
+  for (size_t j = 0; j < rowpositions.size(); ++j)
+    if (std::abs(Avalue[rowpositions[j]]) <= options->small_matrix_value)
+      unlink(rowpositions[j]);
+
+  // rounding the sides of a row with integral coefficients changes the row
+  // bounds of the scaled row (and may relax them within the tolerance), which
+  // is done using the utilities to keep the implied bounds consistent
   if (integral) {
     if (model->row_upper_[row] != kHighsInf)
-      model->row_upper_[row] =
-          std::floor(model->row_upper_[row] + primal_feastol);
+      changeRowUpper(row, std::floor(model->row_upper_[row] + primal_feastol));
     if (model->row_lower_[row] != -kHighsInf)
-      model->row_lower_[row] =
-          std::ceil(model->row_lower_[row] - primal_feastol);
+      changeRowLower(row, std::ceil(model->row_lower_[row] - primal_feastol));
   }
 }
 
@@ -2305,7 +2470,6 @@ HPresolve::Result HPresolve::singletonRow(HighsPostsolveStack& postsolve_stack,
   SingletonRowResult sr = computeSingletonRowBounds(
       val, model->row_lower_[row], model->row_upper_[row],
       model->col_lower_[col], model->col_upper_[col], primal_feastol,
-      getMaxAbsColVal(col),
       model->integrality_[col] != HighsVarType::kContinuous, lb, ub,
       lowerTightened, upperTightened);
   if (sr == SingletonRowResult::kRedundant) {
@@ -2703,9 +2867,7 @@ HPresolve::Result HPresolve::rowPresolve(HighsPostsolveStack& postsolve_stack,
 
             // Use eliminateCol rather than substituteCol to avoid
             // cascading clique fixings that could corrupt this loop
-            if (mipsolver != nullptr && mipsolver->mipdata_->cliquesExtracted) {
-              presolveCliqueTable.eliminateCol(col);
-            }
+            presolveCliqueTable.eliminateCol(col);
 
             // get column lower and upper bounds used to compute bounds on row
             // activities
@@ -4625,6 +4787,31 @@ HighsModelStatus HPresolve::run(HighsPostsolveStack& postsolve_stack) {
   } else if (postsolve_stack.numReductions() > 0) {
     // Reductions performed
     presolve_status_ = HighsPresolveStatus::kReduced;
+    const bool kCheckReducedMatrix = false;
+    if (kCheckReducedMatrix) {
+      // Although presolve can yield small nonzero values in the matrix,
+      // they may play a meaningful role in postsolve so they are
+      // retained. However, they offer some risk to the simplex solver,
+      // so HighsSparseMatrix::assessExtremeValues logs a warning and
+      // returns HighsStatus::kWarning.
+      //
+      // Presolve should never generate explicit zeros or large values
+      // in the matrix, and these cannot be permitted in the simplex
+      // solver, so HighsSparseMatrix::assessExtremeValues logs an error
+      // in either case, and returns HighsStatus::kError, triggering a
+      // presolve error
+      if (model->a_matrix_.assessExtremeValues(
+              "of presolved problem ", *(options)) == HighsStatus::kError) {
+        presolve_status_ = HighsPresolveStatus::kMatrixValueError;
+      } else {
+        // The reduced LP constraint matrix is set up in presolve, so
+        // should be valid structurally, so assert this now - AFTER
+        // assessing extreme values, since explicit zeros are removed
+        // silently in HighsSparseMatrix::assessStructure
+        assert(model->a_matrix_.assessStructure(*(options)) ==
+               HighsStatus::kOk);
+      }
+    }
   } else {
     // No reductions performed
     presolve_status_ = HighsPresolveStatus::kNotReduced;
@@ -4637,6 +4824,10 @@ HighsModelStatus HPresolve::run(HighsPostsolveStack& postsolve_stack) {
 HPresolve::Result HPresolve::substitute(HighsInt substcol, HighsInt staycol,
                                         double offset, double scale,
                                         HighsInt row) {
+  if (scale == 0.0) {
+    if (row != -1) removeRow(row);
+    return removeFixedCol(substcol, offset);
+  }
   HPRESOLVE_CHECKED_CALL(
       updateCliqueTableSubstituteCol(substcol, staycol, offset, scale));
   markColDeleted(substcol);
@@ -4861,11 +5052,11 @@ HPresolve::Result HPresolve::removeDoubletonEquations(
     assert(eq->first == rowsize[eqrow]);
     assert(isEquation(eqrow));
     if (rowsize[eqrow] > 2) return Result::kOk;
+    // rowPresolve may erase or re-key the entry of eqrow (e.g. removeFixedCol
+    // calls reinsertEquation), so continue from a copy of its key
+    const auto key = *eq;
     HPRESOLVE_CHECKED_CALL(rowPresolve(postsolve_stack, eqrow));
-    if (rowDeleted[eqrow])
-      eq = equations.begin();
-    else
-      ++eq;
+    eq = rowDeleted[eqrow] ? equations.begin() : equations.upper_bound(key);
   }
 
   return Result::kOk;
@@ -4873,7 +5064,7 @@ HPresolve::Result HPresolve::removeDoubletonEquations(
 
 HPresolve::Result HPresolve::updateCliqueTableFixedCol(const HighsInt col,
                                                        const double val) {
-  if (mipsolver == nullptr || !mipsolver->mipdata_->cliquesExtracted ||
+  if (!presolveCliqueTable.isActive() ||
       model->integrality_[col] == HighsVarType::kContinuous ||
       (val != 0.0 && val != 1.0)) {
     return Result::kOk;
@@ -4898,7 +5089,7 @@ HPresolve::Result HPresolve::updateCliqueTableFixedCol(const HighsInt col,
 HPresolve::Result HPresolve::updateCliqueTableSubstituteCol(
     const HighsInt substCol, const HighsInt stayCol, const double offset,
     const double scale) {
-  if (mipsolver == nullptr || !mipsolver->mipdata_->cliquesExtracted) {
+  if (!presolveCliqueTable.isActive()) {
     return Result::kOk;
   }
   bool isBinary =

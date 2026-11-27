@@ -11,8 +11,10 @@ HiGHS can be used via AMPL, see the [AMPL Documentation](https://dev.ampl.com/so
 
 ## GAMS
 
-The interface is available at [GAMSlinks](https://github.com/coin-or/GAMSlinks/),
-including [pre-build libraries](https://github.com/coin-or/GAMSlinks/releases).
+HiGHS is included in GAMS distributions from GAMS 40 onward, see the
+[GAMS/HiGHS documentation](https://www.gams.com/latest/docs/S_HIGHS.html).
+GAMS provides the HiGHS LP and MIP solvers, including the CPU and NVIDIA GPU
+versions of PDLP.
 
 ## Javascript
 
@@ -20,7 +22,8 @@ including [pre-build libraries](https://github.com/coin-or/GAMSlinks/releases).
    [highs-js](https://github.com/lovasoa/highs-js). See the [demo](https://lovasoa.github.io/highs-js/)
    and the [npm package](https://www.npmjs.com/package/highs).
  * Alternatively, HiGHS also has a [native Node.js](https://www.npmjs.com/package/highs-solver)
-   interface.
+   interface. The last release was in August 2025, so it may not include recent
+   versions of HiGHS.
 
 ## MATLAB
 

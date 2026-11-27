@@ -44,9 +44,6 @@ HighsStatus readBasisStream(const HighsLogOptions& log_options, HighsLp& lp,
 // Methods taking HighsLp as an argument
 HighsStatus assessLp(HighsLp& lp, const HighsOptions& options);
 
-bool lpDimensionsOk(const std::string& message, const HighsLp& lp,
-                    const HighsLogOptions& log_options);
-
 HighsStatus assessCosts(const HighsOptions& options, const HighsInt ml_col_os,
                         const HighsIndexCollection& index_collection,
                         vector<double>& cost, bool& has_infinite_cost,
@@ -121,9 +118,10 @@ void appendRowsToLpVectors(HighsLp& lp, const HighsInt num_new_row,
 void deleteScale(vector<double>& scale,
                  const HighsIndexCollection& index_collection);
 
-void changeLpMatrixCoefficient(HighsLp& lp, const HighsInt row,
-                               const HighsInt col, const double new_value,
-                               const bool zero_new_value);
+HighsStatus changeLpMatrixCoeff(const HighsLogOptions& log_options, HighsLp& lp,
+                                const HighsInt row, const HighsInt col,
+                                const double new_value,
+                                const double small_matrix_value);
 
 HighsStatus changeLpIntegrality(HighsLp& lp,
                                 const HighsIndexCollection& index_collection,
@@ -253,7 +251,8 @@ bool readSolutionFileIdIgnoreLineOk(std::string& id, std::ifstream& in_file);
 bool readSolutionFileIdDoubleLineOk(std::string& id, double& value,
                                     std::ifstream& in_file);
 
-void assessColPrimalSolution(const HighsOptions& options, const double primal,
+void assessColPrimalSolution(const bool assess_as_mip,
+                             const HighsOptions& options, const double primal,
                              const double lower, const double upper,
                              const HighsVarType type, double& col_infeasibility,
                              double& integer_infeasibility);
@@ -272,16 +271,6 @@ HighsStatus calculateRowValuesQuad(const HighsLp& lp, HighsSolution& solution,
                                    const HighsInt report_row = -1);
 
 HighsStatus calculateColDualsQuad(const HighsLp& lp, HighsSolution& solution);
-
-bool isColDataNull(const HighsLogOptions& log_options,
-                   const double* usr_col_cost, const double* usr_col_lower,
-                   const double* usr_col_upper);
-bool isRowDataNull(const HighsLogOptions& log_options,
-                   const double* usr_row_lower, const double* usr_row_upper);
-bool isMatrixDataNull(const HighsLogOptions& log_options,
-                      const HighsInt* usr_matrix_start,
-                      const HighsInt* usr_matrix_index,
-                      const double* usr_matrix_value);
 
 void reportPresolveReductions(const HighsLogOptions& log_options,
                               HighsPresolveStatus presolve_status,
