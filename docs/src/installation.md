@@ -5,6 +5,8 @@
 HiGHS uses CMake as build system, and requires at least version
 3.15. Details about building from source using CMake can be found in `HiGHS/cmake/README.md`.
 
+When building from a source archive without a `.git` directory, the git hash reported by HiGHS is `n/a`. To set it, pass `-DHIGHS_BUILD_GITHASH=<sha>` to CMake, or `--config-settings=cmake.define.HIGHS_BUILD_GITHASH=<sha>` when building `highspy` with pip. In a git checkout, `git describe` is used instead.
+
 ### Bazel build
 
 Alternatively, building with Bazel is supported for Bazel-based projects. To build HiGHS, from the root directory, run
@@ -129,7 +131,7 @@ To choose the folder that `highs_extras` is loaded from, call
 ```cpp
 Highs::initializeExtras("<folder containing highs_extras>", false);
 ```
-or, from C, `Highs_initializeExtras("<folder containing highs_extras>", 0)`, once, before HiPO is first used. If the folder is empty and the second argument is true, the default locations described below are searched; if the second argument is false, nothing is loaded. Only the first call attempts to load the library: later calls return its result, whatever their arguments. These methods do nothing when the extras are linked statically.
+or, from C, `Highs_initializeExtras("<folder containing highs_extras>", 0)`, or, from C#, `HighsLpSolver.initializeExtras("<folder containing highs_extras>", false)`, once, before HiPO is first used. The folder is UTF-8 encoded and, on Windows, must be an absolute path (the C# method makes it absolute). From C#, call it before creating a `HighsLpSolver`, since the first solver may already trigger the default search. If the folder is empty and the second argument is true, the default locations described below are searched; if the second argument is false, nothing is loaded. Only the first call attempts to load the library: later calls return its result, whatever their arguments. These methods do nothing when the extras are linked statically.
 
 If neither method is called, HiGHS searches the default locations when HiPO is first used.
 

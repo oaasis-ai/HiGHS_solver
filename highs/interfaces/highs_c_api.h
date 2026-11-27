@@ -127,6 +127,7 @@ static const HighsInt kHighsCallbackMipDefineLazyConstraints = 8;
 static const HighsInt kHighsCallbackCallbackMipUserSolution = 9;
 static const HighsInt kHighsCallbackQpFirstFeasiblePoint = 10;
 static const HighsInt kHighsCallbackQpInterrupt = 11;
+static const HighsInt kHighsCallbackPdlpInterrupt = 12;
 
 // Constants for Highs_getCallbackDataOutItem. These do not appear in the C++
 // API.
@@ -2682,7 +2683,8 @@ HighsInt Highs_repairCallbackSolution(HighsCallbackDataIn* data_in);
 /**
  * @brief Initialize optional extras and cache the result.
  *
- * @param directory Directory containing the extras library. NULL means empty.
+ * @param directory Directory containing the extras library, UTF-8 encoded.
+ *                  NULL means empty.
  * @param search_if_empty If nonzero, search default library directories when
  *                        directory is NULL or empty.
  * @return kHighsStatusOk on success, kHighsStatusError on failure.
@@ -2703,7 +2705,7 @@ HighsInt Highs_initializeExtras(const char* directory,
  *
  * @returns The HiGHS compilation date.
  */
-static const char* Highs_compilationDate(void);
+const char* Highs_compilationDate(void);
 
 // These are deprecated because they don't follow the style guide. Constants
 // must begin with `k`.

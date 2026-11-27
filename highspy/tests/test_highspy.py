@@ -1425,6 +1425,7 @@ class TestHighsPy(unittest.TestCase):
         h.cbLogging += chk_callback
         h.cbSimplexInterrupt += do_nothing
         h.cbIpmInterrupt += do_nothing
+        h.cbPdlpInterrupt += do_nothing
         h.cbMipSolution += do_nothing
         h.cbMipImprovingSolution += do_nothing
         h.cbMipLogging += do_nothing
@@ -1451,6 +1452,7 @@ class TestHighsPy(unittest.TestCase):
         h.cbLogging -= chk_callback
         h.cbSimplexInterrupt -= do_nothing
         h.cbIpmInterrupt -= do_nothing
+        h.cbPdlpInterrupt -= do_nothing
         h.cbMipSolution -= do_nothing
         h.cbMipImprovingSolution -= do_nothing
         h.cbMipLogging -= do_nothing
@@ -1482,6 +1484,7 @@ class TestHighsPy(unittest.TestCase):
         self.assertRaises(HighsError, lambda: h.__setattr__("cbLogging", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbSimplexInterrupt", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbIpmInterrupt", None))
+        self.assertRaises(HighsError, lambda: h.__setattr__("cbPdlpInterrupt", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbMipSolution", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbMipImprovingSolution", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbMipLogging", None))
@@ -2601,3 +2604,11 @@ class TestHighsPyPackaging(unittest.TestCase):
         """A libhighs in the wheel can be swapped with another package's copy, e.g. OR-Tools"""
         package_dir = Path(highspy.__file__).parent
         self.assertEqual(sorted(p.name for p in package_dir.glob("libhighs*")), [])
+
+    @unittest.skipIf(platform == "win32", "DLLs only export marked symbols")
+    def test_core_does_not_export_highs_symbols(self):
+        """Exported HiGHS symbols can be merged with another HiGHS in the process (#2453)"""
+        import ctypes
+
+        core = ctypes.CDLL(highspy._core.__file__)
+        self.assertFalse(hasattr(core, "Highs_create"))
