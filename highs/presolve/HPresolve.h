@@ -45,7 +45,7 @@ class HPresolve {
   HPresolveCliqueTable presolveCliqueTable;
   double primal_feastol;
   bool may_require_basis_postsolve_;
-  bool may_require_primal_dual_postsolve_;
+  bool may_require_dual_postsolve_;
   std::vector<HighsBool> allow_rule_;
 
   // triplet storage
@@ -584,6 +584,12 @@ class HPresolve {
   }
 
   HighsPresolveStatus getPresolveStatus() const { return presolve_status_; }
+
+  bool failed() const {
+    return presolve_status_ == HighsPresolveStatus::kOutOfMemory ||
+           presolve_status_ == HighsPresolveStatus::kException ||
+           presolve_status_ == HighsPresolveStatus::kMatrixValueError;
+  }
 
   bool zeroRowActivityFeasible() const;
 
