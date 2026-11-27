@@ -15,6 +15,7 @@
 #include <cctype>
 
 #include "HighsExternalApi.h"
+#include "util/HighsSolverSelect.h"
 #include "util/stringutil.h"
 
 template <typename RecordType>
@@ -454,9 +455,6 @@ OptionStatus checkOptionValue(const HighsLogOptions& report_log_options,
       return OptionStatus::kIllegalValue;
   } else if (option.name == kHipoFactorString) {
     if (!optionHipoFactorOk(report_log_options, value))
-      return OptionStatus::kIllegalValue;
-  } else if (option.name == kPresolveLightString) {
-    if (!optionOffChooseOnOk(report_log_options, option.name, value))
       return OptionStatus::kIllegalValue;
   }
   return OptionStatus::kOk;
@@ -1160,16 +1158,13 @@ bool usePdlp(const std::string& solver) {
   return solver == kPdlpString || solver == kHiPdlpString;
 }
 
-bool mayRequireBasisPostsolve(const HighsOptions* options) {
-  if (usePdlp(options->solver)) return false;
-  if (useIpm(options->solver) && options->run_crossover == kHighsOffString)
-    return false;
-  return true;
-}
-
-bool mayRequirePrimalDualPostsolve(const HighsOptions* options) {
+bool mayRequireDualPostsolve(const HighsOptions* options) {
   if (usePdlp(options->solver)) return true;
-  if (useIpm(options->solver)) {
+  // Presolve runs before solver selection, which may choose IPM
+  const bool may_select_ipm =
+      options->solver == kHighsChooseString &&
+      solverSelectionMayChooseIpm(options->solver_select_strategy);
+  if (useIpm(options->solver) || may_select_ipm) {
     if (options->run_crossover == kHighsOffString) return true;
     if (options->run_crossover == kHighsChooseString) return true;
     // Currently if run_crossover is on, and crossover fails, then
@@ -1180,4 +1175,11 @@ bool mayRequirePrimalDualPostsolve(const HighsOptions* options) {
     //    if (options->run_crossover == kHighsOnString) return true;
   }
   return false;
+}
+
+bool mayRequireBasisPostsolve(const HighsOptions* options) {
+  if (usePdlp(options->solver)) return false;
+  if (useIpm(options->solver) && options->run_crossover == kHighsOffString)
+    return false;
+  return true;
 }

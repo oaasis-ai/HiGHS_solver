@@ -72,15 +72,12 @@ TEST_CASE("check-solution", "[highs_check_solution]") {
 
 TEST_CASE("check-set-mip-solution", "[highs_check_solution]") {
   const std::string test_name = Catch::getResultCapture().getCurrentTestName();
-  HighsStatus return_status;
   const std::string model = "flugpl";  //"small_mip";//
   std::string model_file =
       std::string(HIGHS_DIR) + "/check/instances/" + model + ".mps";
   Highs highs;
   const HighsInfo& info = highs.getInfo();
-  if (dev_run)
-    printf(
-        "\n********************\nSolving from scratch\n********************\n");
+  if (dev_run) highsPrintStringAsHeading("Solving from scratch");
   highs.setOptionValue("output_flag", dev_run);
   highs.readModel(model_file);
   HighsLp lp = highs.getLp();
@@ -92,20 +89,16 @@ TEST_CASE("check-set-mip-solution", "[highs_check_solution]") {
   HighsInt scratch_num_simplex = info.simplex_iteration_count;
   if (dev_run) printf("Num nodes = %d\n", int(scratch_num_nodes));
 
-  std::string solution_file = test_name + model + ".sol";
+  std::string sol_file = test_name + model + ".sol";
   if (dev_run) REQUIRE(highs.writeSolution("") == HighsStatus::kOk);
 
-  REQUIRE(highs.writeSolution(solution_file) == HighsStatus::kOk);
+  REQUIRE(highs.writeSolution(sol_file) == HighsStatus::kOk);
 
   highs.clear();
   highs.setOptionValue("output_flag", dev_run);
 
   auto headerAndPassModel = [&](const std::string& title) {
-    if (dev_run)
-      printf(
-          "\n***************************\n%s"
-          "\n***************************\n",
-          title.c_str());
+    if (dev_run) highsPrintStringAsHeading(title);
     highs.passModel(lp);
   };
 
@@ -115,8 +108,7 @@ TEST_CASE("check-set-mip-solution", "[highs_check_solution]") {
         info.mip_node_count != scratch_num_nodes ||
         info.simplex_iteration_count != scratch_num_simplex;
     REQUIRE(different_search);
-    highs.clear();
-    highs.setOptionValue("output_flag", dev_run);
+    highs.clearSolver();
   };
 
   const bool other_tests = true;
@@ -124,24 +116,18 @@ TEST_CASE("check-set-mip-solution", "[highs_check_solution]") {
   bool valid, integral, feasible;
   if (test0) {
     headerAndPassModel("Solving from saved solution");
-    return_status = highs.setSolution(optimal_solution);
-    REQUIRE(return_status == HighsStatus::kOk);
-
-    return_status = highs.assessPrimalSolution(valid, integral, feasible);
-    REQUIRE(return_status == HighsStatus::kOk);
-
+    REQUIRE(highs.setSolution(optimal_solution) == HighsStatus::kOk);
+    REQUIRE(highs.assessPrimalSolution(valid, integral, feasible) ==
+            HighsStatus::kOk);
     runTestSearchAndClear();
   }
 
   const bool test1 = other_tests;
   if (test1) {
     headerAndPassModel("Solving from solution file");
-    return_status = highs.readSolution(solution_file);
-    REQUIRE(return_status == HighsStatus::kOk);
-
-    return_status = highs.assessPrimalSolution(valid, integral, feasible);
-    REQUIRE(return_status == HighsStatus::kOk);
-
+    REQUIRE(highs.readSolution(sol_file) == HighsStatus::kOk);
+    REQUIRE(highs.assessPrimalSolution(valid, integral, feasible) ==
+            HighsStatus::kOk);
     runTestSearchAndClear();
   }
 
@@ -156,73 +142,91 @@ TEST_CASE("check-set-mip-solution", "[highs_check_solution]") {
       solution.col_value[iCol] = 0;
     }
     REQUIRE(solution_dl);
-
-    return_status = highs.setSolution(solution);
-    REQUIRE(return_status == HighsStatus::kOk);
-
-    return_status = highs.assessPrimalSolution(valid, integral, feasible);
-    REQUIRE(return_status == HighsStatus::kWarning);
-
+    REQUIRE(highs.setSolution(solution) == HighsStatus::kOk);
+    REQUIRE(highs.assessPrimalSolution(valid, integral, feasible) ==
+            HighsStatus::kWarning);
     runTestSearchAndClear();
   }
 
   const bool test3 = other_tests;
   if (test3) {
     headerAndPassModel("Solving from column solution file");
-    std::string column_solution_file =
-        std::string(HIGHS_DIR) + "/check/instances/flugpl_integer.sol";
-    return_status = highs.readSolution(column_solution_file);
-    REQUIRE(return_status == HighsStatus::kOk);
-
-    return_status = highs.assessPrimalSolution(valid, integral, feasible);
-    REQUIRE(return_status == HighsStatus::kWarning);
-
+    std::string sol_file0 = test_name + ".sol";
+    FILE* file = fopen(sol_file0.c_str(), "w");
+    // No entry for UE6
+    fprintf(
+        file, "%s",
+        "Model status\nOptimal\n\n# Primal solution "
+        "values\nFeasible\nObjective 1201500\n# Columns 18\n"
+        "STM1 0\nANM1 6\nUE1 0\nSTM2 60\n\nANM2 6\nUE2 0\nSTM3 60\nANM3 16\n"
+        "UE3 0\nSTM4 70\nANM4 7\nUE4 0\nSTM5 70\nANM5 12\nUE5 0\nSTM6 75\nANM6 "
+        "0\nUE6 0\n");
+    fclose(file);
+    REQUIRE(highs.readSolution(sol_file0) == HighsStatus::kOk);
+    REQUIRE(highs.assessPrimalSolution(valid, integral, feasible) ==
+            HighsStatus::kWarning);
     runTestSearchAndClear();
+    std::remove(sol_file0.c_str());
   }
 
   const bool test4 = other_tests;
   if (test4) {
-    headerAndPassModel("Solving from partial integer solution");
+    headerAndPassModel("Solving from partial solution");
     HighsSolution starting_solution = optimal_solution;
     HighsInt k = 0;
-    const HighsInt max_k = 1;
+    // Sets 2/3 of the integer variables to kHighsUndefined values
+    const HighsInt max_k = 2;
     // Set a proportion of the integer variables to a fractional value
     for (HighsInt iCol = 0; iCol < lp.num_col_; iCol++) {
       if (lp.integrality_[iCol] != HighsVarType::kInteger) continue;
-      if (k <= max_k) {
-        starting_solution.col_value[iCol] = 0.5;
+      if (k < max_k) {
+        starting_solution.col_value[iCol] = kHighsUndefined;
         k++;
       } else {
         k = 0;
       }
     }
-    return_status = highs.setSolution(starting_solution);
-    REQUIRE(return_status == HighsStatus::kOk);
+    // Partial start solutions can also be (were originally) flagged
+    // by setting values for integer variables to fractional
+    // values. However, this was a bad idea and, until now, a value
+    // that was integer feasible but bound infeasible led to the
+    // integer variable being fixed to that value when solving for the
+    // unspecified integer variables.
+    //
+    // Check that this bug has been fixed, and that a an integer
+    // infeasible but bound feasible value is handled correctly, by
+    // modifying a couple of the variables whose values are currently
+    // kHighsUndefined
+    //
+    // Set column 3 to an integer feasible but bound infeasible value
+    HighsInt iCol = 3;
+    REQUIRE(lp.integrality_[iCol] == HighsVarType::kInteger);
+    REQUIRE(lp.col_lower_[iCol] == 57);
+    REQUIRE(lp.col_upper_[iCol] == 75);
+    REQUIRE(starting_solution.col_value[iCol] == kHighsUndefined);
+    starting_solution.col_value[iCol] = 50;
+
+    // Set column 6 to an integer infeasible but bound feasible value
+    iCol = 6;
+    REQUIRE(lp.integrality_[iCol] == HighsVarType::kInteger);
+    REQUIRE(lp.col_lower_[iCol] == 57);
+    REQUIRE(lp.col_upper_[iCol] == 75);
+    REQUIRE(starting_solution.col_value[iCol] == kHighsUndefined);
+    starting_solution.col_value[iCol] = 65.5;
+
+    REQUIRE(highs.setSolution(starting_solution) == HighsStatus::kWarning);
     runTestSearchAndClear();
   }
 
   const bool test5 = other_tests;
   if (test5) {
-    headerAndPassModel("Solving from sparse integer solution");
+    headerAndPassModel("Solving from sparse solution");
     HighsInt num_integer_variable = 0;
     for (HighsInt iCol = 0; iCol < lp.num_col_; iCol++)
       if (lp.integrality_[iCol] == HighsVarType::kInteger)
         num_integer_variable++;
     std::vector<HighsInt> index;
     std::vector<double> value;
-    // Check that duplicate values are spotted
-    index.push_back(0);
-    value.push_back(0);
-    index.push_back(1);
-    value.push_back(1);
-    index.push_back(0);
-    value.push_back(2);
-    HighsInt num_entries = index.size();
-    return_status = highs.setSolution(num_entries, index.data(), value.data());
-    REQUIRE(return_status == HighsStatus::kWarning);
-
-    index.clear();
-    value.clear();
     std::vector<HighsBool> is_set;
     is_set.assign(lp.num_col_, false);
     HighsInt num_to_set = 2;
@@ -237,23 +241,58 @@ TEST_CASE("check-set-mip-solution", "[highs_check_solution]") {
       value.push_back(optimal_solution.col_value[iCol]);
       iSet++;
     }
-    num_entries = index.size();
+    HighsInt num_entries = index.size();
     assert(num_entries == num_to_set);
-    return_status = highs.setSolution(num_entries, index.data(), value.data());
-    REQUIRE(return_status == HighsStatus::kOk);
+    REQUIRE(highs.setSolution(num_entries, index.data(), value.data()) ==
+            HighsStatus::kOk);
     runTestSearchAndClear();
   }
 
   const bool test6 = other_tests;
   if (test6) {
     headerAndPassModel("Solving from illegal column solution file");
-    std::string column_solution_file =
-        std::string(HIGHS_DIR) + "/check/instances/flugpl_illegal_integer.sol";
-    return_status = highs.readSolution(column_solution_file);
-    REQUIRE(return_status == HighsStatus::kError);
+    std::string sol_file1 = test_name + ".sol";
+    FILE* file = fopen(sol_file1.c_str(), "w");
+    // No entry for UE6
+    fprintf(
+        file, "%s",
+        "Model status\nOptimal\n\n# Primal solution "
+        "values\nFeasible\nObjective 1201500\n# Columns 18\n"
+        "STM1 0\nANM1 6\nUE1 0\nSTM2 60\n\nANM2 6\nUE2 0\nSTM3 60\nANM3 16\n"
+        "UE3 0\nSTM4 70\nANM4 7\nUE4 0\nSTM5 70\nANM5 12\nUE5 0\nSTM6 75\nANM6 "
+        "0\n");
+    fclose(file);
+    REQUIRE(highs.readSolution(sol_file1) == HighsStatus::kError);
+    std::remove(sol_file1.c_str());
   }
+
+  const bool test7 = true;  // other_tests;
+  if (test7) {
+    headerAndPassModel(
+        "Solving from illegal/empty solution, or with duplicates");
+    // index.data() is a null pointer, so num_entries = 0 is an error
+    REQUIRE(highs.setSolution(0, nullptr, nullptr) == HighsStatus::kError);
+    std::vector<HighsInt> index = {lp.num_col_};
+    REQUIRE(highs.setSolution(-1, index.data(), nullptr) ==
+            HighsStatus::kError);
+    // num_entries = 0 is now just a warning
+    REQUIRE(highs.setSolution(0, index.data(), nullptr) ==
+            HighsStatus::kWarning);
+    // index out of range
+    REQUIRE(highs.setSolution(1, index.data(), nullptr) == HighsStatus::kError);
+    // index out of range
+    index = {-1};
+    REQUIRE(highs.setSolution(1, index.data(), nullptr) == HighsStatus::kError);
+    // Check that duplicate values are spotted
+    index = {0, 1, 0};
+    std::vector<double> value = {0, 1, 2};
+    HighsInt num_entries = index.size();
+    REQUIRE(highs.setSolution(num_entries, index.data(), value.data()) ==
+            HighsStatus::kWarning);
+  }
+
   assert(other_tests);
-  std::remove(solution_file.c_str());
+  std::remove(sol_file.c_str());
 
   highs.resetThreadScheduler(true);
 }
@@ -744,4 +783,236 @@ TEST_CASE("issue-3317", "[highs_check_solution]") {
   std::remove(sol_file.c_str());
 
   h.resetThreadScheduler(true);
+}
+
+TEST_CASE("issue-3499", "[highs_check_solution]") {
+  const std::string test_name = Catch::getResultCapture().getCurrentTestName();
+  std::string sol_file = test_name + ".sol";
+
+  FILE* file = fopen(sol_file.c_str(), "w");
+  REQUIRE(file != nullptr);
+  std::string file_content =
+      "Model status\nOptimal\n\n# Primal solution values\nFeasible\nObjective "
+      "2\n";
+  fprintf(file, "%s", file_content.c_str());
+  fclose(file);
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  REQUIRE(h.readSolution(sol_file) == HighsStatus::kError);
+
+  std::remove(sol_file.c_str());
+}
+
+TEST_CASE("lp-set-solution", "[highs_check_solution]") {
+  std::string model = "shell";  //"adlittle";//
+  std::string model_file =
+      std::string(HIGHS_DIR) + "/check/instances/" + model + ".mps";
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  h.setOptionValue("log_dev_level", 1);
+  REQUIRE(h.readModel(model_file) == HighsStatus::kOk);
+
+  const HighsInfo& info = h.getInfo();
+  if (dev_run) highsPrintStringAsHeading("No initial solution");
+
+  REQUIRE(h.run() == HighsStatus::kOk);
+
+  const HighsLp& lp = h.getLp();
+
+  HighsSolution solution;
+  std::vector<double>& col_value = solution.col_value;
+  std::vector<HighsInt> col_index;
+
+  col_value.assign(lp.num_col_, 0);
+  REQUIRE(h.setSolution(solution) != HighsStatus::kError);
+
+  if (dev_run) highsPrintStringAsHeading("Zero initial solution");
+  REQUIRE(h.run() == HighsStatus::kOk);
+
+  col_value.assign(lp.num_col_, 1);
+  REQUIRE(h.setSolution(solution) != HighsStatus::kError);
+
+  if (dev_run) highsPrintStringAsHeading("Unit initial solution");
+  REQUIRE(h.run() == HighsStatus::kOk);
+
+  HighsRandom random;
+
+  for (HighsInt iCol = 0; iCol < lp.num_col_; iCol++)
+    col_value[iCol] = random.fraction();
+  REQUIRE(h.setSolution(solution) != HighsStatus::kError);
+
+  if (dev_run) highsPrintStringAsHeading("Random initial solution");
+  REQUIRE(h.run() == HighsStatus::kOk);
+
+  col_index.clear();
+  col_value.clear();
+  for (HighsInt iCol = 0; iCol < lp.num_col_; iCol++) {
+    if (random.fraction() < 0.5) continue;
+    col_index.push_back(iCol);
+    col_value.push_back(1);
+  }
+  HighsInt num_entries = col_value.size();
+  REQUIRE(h.setSolution(num_entries, col_index.data(), col_value.data()) !=
+          HighsStatus::kError);
+
+  if (dev_run) highsPrintStringAsHeading("Partial initial solution");
+  REQUIRE(h.run() == HighsStatus::kOk);
+
+  h.resetThreadScheduler(true);
+}
+
+// Solve the model with the start solution, presolve on, and check
+// that the solver reaches the optimal objective value, and that this
+// is the objective value of the solution returned
+static void testStartSolution(Highs& h, const double required_objective) {
+  REQUIRE(h.run() == HighsStatus::kOk);
+  REQUIRE(h.getModelStatus() == HighsModelStatus::kOptimal);
+  const double optimal_objective = h.getObjectiveValue();
+  REQUIRE(std::fabs(optimal_objective - required_objective) <=
+          1e-6 * (1 + std::fabs(required_objective)));
+  const std::vector<double> col_value = h.getSolution().col_value;
+  const double computed_objective = h.getLp().objectiveValue(col_value);
+  if (dev_run)
+    printf(
+        "testStartSolution: computed_objective = %g; optimal_objective = %g\n",
+        computed_objective, optimal_objective);
+  REQUIRE(std::fabs(computed_objective - optimal_objective) <=
+          1e-6 * (1 + std::fabs(optimal_objective)));
+}
+
+static void printSolutionAndObjective(const std::string& message,
+                                      const std::vector<double>& solution,
+                                      const double objective) {
+  if (!dev_run) return;
+  HighsInt num_col = solution.size();
+  printf("%s is\n   ", message.c_str());
+  for (HighsInt iCol = 0; iCol < num_col; iCol++)
+    printf("%2g%s", solution[iCol], iCol < num_col - 1 ? " " : "\n");
+  printf("   with objective value %g\n", objective);
+}
+
+TEST_CASE("issue-3634", "[highs_test_mip_solver]") {
+  // The image of the start solution in the reduced space is feasible,
+  // and better than the start solution. The solution returned must
+  // be the postsolved image, not the start solution
+  const std::string model =
+      std::string(HIGHS_DIR) + "/check/instances/issue-3634.mps";
+  std::vector<double> start(96, 0);
+  for (HighsInt iCol : {0, 1, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 18, 63, 93})
+    start[iCol] = 1;
+  start[16] = 19;
+  start[17] = 23;
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  h.setOptionValue("mip_rel_gap", 0);
+  REQUIRE(h.readModel(model) == HighsStatus::kOk);
+  h.run();
+  const std::vector<double> optimal_col_value = h.getSolution().col_value;
+  const double optimal_objective = h.getLp().objectiveValue(optimal_col_value);
+  printSolutionAndObjective("Optimal solution", optimal_col_value,
+                            optimal_objective);
+
+  HighsSolution solution;
+  solution.col_value = start;
+  solution.value_valid = true;
+
+  REQUIRE(h.setSolution(solution) == HighsStatus::kOk);
+
+  const double start_objective = h.getLp().objectiveValue(start);
+  printSolutionAndObjective("Start solution", start, start_objective);
+
+  // Sanity check that the start objective exceeds the required
+  // objective
+  REQUIRE(optimal_objective < start_objective);
+
+  // Start solution is not optimal, but when the objecctive value of
+  // its presolved image is evaluated, it yields the optimal
+  // objective. Presumably this is becaues the start solution has
+  // components whose values are inconsistent with presolve
+  // reductions, and these are "corrected" when presolve is applied to
+  // the start solution. Further evidence of this comes when the
+  // postsolve is applied to the presolved image, as the resulting
+  // solution (back in the original space) differs from the original
+  // start solution.
+  testStartSolution(h, optimal_objective);
+
+  h.resetGlobalScheduler(true);
+}
+
+TEST_CASE("issue-3642", "[highs_test_mip_solver]") {
+  // MIP has c = (3, 1, 0, -5, 4, 2) and offset of 100 (for testing
+  // the correct application of offsets).
+  //
+  // Hence the optimal solution x = (0, 1, 1, 1, 0, 0) has objective
+  // value of 96
+  //
+  // Key to the issue is r0
+  //
+  // -x1 + x2 + x3 - x5 <= 1
+  //
+  // Column x5 is parallel to x1 with a higher cost, so presolve
+  // removes it as the only reduction, leaving r0 as
+  //
+  // -x1 + x2 + x3 <= 1
+  //
+  // The start has x = (0, 0, 1, 1, 0, 1) satisfying r0, with
+  // objective value 97
+  //
+  // However, in the reduced space, the start is x = (0, 0, 1, 1, 0)
+  // violating r0, but its objective value 95 is below the optimal
+  // objective value of 96
+  //
+  HighsLp lp;
+  lp.offset_ = 100;
+  lp.num_col_ = 6;
+  lp.num_row_ = 3;
+  lp.col_cost_ = {3, 1, 0, -5, 4, 2};
+  lp.col_lower_.assign(lp.num_col_, 0);
+  lp.col_upper_.assign(lp.num_col_, 1);
+  lp.integrality_.assign(lp.num_col_, HighsVarType::kInteger);
+  lp.row_lower_ = {-inf, 1, -inf};
+  lp.row_upper_ = {1, 1, 1};
+  lp.a_matrix_.format_ = MatrixFormat::kRowwise;
+  lp.a_matrix_.start_ = {0, 4, 7, 9};
+  lp.a_matrix_.index_ = {1, 2, 3, 5, 0, 2, 4, 0, 3};
+  lp.a_matrix_.value_ = {-1, 1, 1, -1, 1, 1, 1, 1, 1};
+
+  Highs h;
+  h.setOptionValue("output_flag", dev_run);
+  REQUIRE(h.passModel(lp) == HighsStatus::kOk);
+  //  h.writeModel("");
+
+  h.run();
+  const std::vector<double> optimal_col_value = h.getSolution().col_value;
+  const double optimal_objective = h.getLp().objectiveValue(optimal_col_value);
+  printSolutionAndObjective("Optimal solution", optimal_col_value,
+                            optimal_objective);
+
+  HighsSolution start;
+  start.col_value = {0, 0, 1, 1, 0, 1};
+  start.value_valid = true;
+  const double start_objective = h.getLp().objectiveValue(start.col_value);
+
+  printSolutionAndObjective("Start solution", start.col_value, start_objective);
+
+  REQUIRE(h.setSolution(start) == HighsStatus::kOk);
+
+  // Prior to #3751, it was assumed that if the start solution was
+  // feasible in the original space, its presolved image would be
+  // feasible in the reduced space, but this instance demonstrates
+  // that this is not the case
+  //
+  // If the start solution is accepted as an integer feasible
+  // solution, with its objective given by its value for the reduced
+  // objective evaluated at its presolved image (95), then the true
+  // optimal solution of the problem is not found, since its objective
+  // is 96
+  //
+  // The correct fix is that the start solution can be accepted as an
+  // integer feasible solution, but if its objective in the reduced
+  // space is better, then it can only be accepted if the presolved
+  // image of start solution is feasible
+  testStartSolution(h, optimal_objective);
+
+  h.resetGlobalScheduler(true);
 }

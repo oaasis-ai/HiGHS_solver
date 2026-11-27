@@ -1,7 +1,6 @@
 name: hipo-install-extras
 
 on:
-  push:
   pull_request:
 
 concurrency:
@@ -18,7 +17,7 @@ jobs:
         extras: ["ON", "OFF"]
     steps:
       - name: Checkout HiGHS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install OpenBLAS (Linux)
         if: runner.os == 'Linux'
@@ -153,7 +152,7 @@ jobs:
         extras: ["ON", "OFF"]
     steps:
       - name: Checkout HiGHS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Configure, build and install (default BLAS -> Apple Accelerate)
         run: |
@@ -174,7 +173,7 @@ jobs:
           else
             # Accelerate is linked into libhighs_extras.a's *consumer* (the
             # highs library/executable), not into the static archive itself.
-            lib=$(find ${{ github.workspace }}/install/lib ${{ github.workspace }}/install/bin -name "libhighs*.dylib" -o -name "highs" | head -n1)
+            lib=$(find ${{ github.workspace }}/install/lib ${{ github.workspace }}/install/bin -type f \( -name "libhighs*.dylib" -o -name "highs" \) | head -n1)
           fi
           [ -n "$lib" ] || { echo "::error::no installed binary found to inspect"; exit 1; }
           echo "Checking linked libraries for $lib"
@@ -203,7 +202,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout HiGHS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Check whether this SDK supports the new Accelerate LAPACK interface
         id: accel

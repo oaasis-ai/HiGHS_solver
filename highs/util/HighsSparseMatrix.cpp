@@ -55,6 +55,7 @@ bool HighsSparseMatrix::equivalent(const HighsSparseMatrix& matrix) const {
 }
 
 void HighsSparseMatrix::clear() {
+  this->name_ = "";
   this->num_col_ = 0;
   this->num_row_ = 0;
   this->start_.clear();
@@ -157,6 +158,14 @@ void HighsSparseMatrix::ensureRowwise() {
   assert(static_cast<HighsInt>(start_.size()) == num_row_ + 1);
   assert(static_cast<HighsInt>(index_.size()) == numNz());
   assert(static_cast<HighsInt>(value_.size()) == numNz());
+}
+
+void HighsSparseMatrix::setEmptyColwise(const HighsInt num_col) {
+  this->clear();
+  assert(this->isColwise());
+  this->start_.assign(num_col + 1, 0);
+  this->num_col_ = num_col;
+  this->num_row_ = 0;
 }
 
 void HighsSparseMatrix::addVec(const HighsInt num_nz, const HighsInt* index,
@@ -667,15 +676,8 @@ void HighsSparseMatrix::deleteRows(
 
 HighsStatus HighsSparseMatrix::assessStart(const HighsLogOptions& log_options) {
   // Identify main dimensions
-  HighsInt vec_dim;
-  HighsInt num_vec;
-  if (this->isColwise()) {
-    vec_dim = this->num_row_;
-    num_vec = this->num_col_;
-  } else {
-    vec_dim = this->num_col_;
-    num_vec = this->num_row_;
-  }
+  const HighsInt vec_dim = this->vecDim();
+  const HighsInt num_vec = this->numVec();
   if (this->start_[0]) {
     highsLogUser(log_options, HighsLogType::kError,
                  "Matrix start[0] = %d, not 0\n", int(this->start_[0]));
@@ -703,15 +705,7 @@ HighsStatus HighsSparseMatrix::assessStart(const HighsLogOptions& log_options) {
 HighsStatus HighsSparseMatrix::assessIndexBounds(
     const HighsLogOptions& log_options) {
   // Identify main dimensions
-  HighsInt vec_dim;
-  HighsInt num_vec;
-  if (this->isColwise()) {
-    vec_dim = this->num_row_;
-    //    num_vec = this->num_col_;
-  } else {
-    vec_dim = this->num_col_;
-    //    num_vec = this->num_row_;
-  }
+  const HighsInt vec_dim = this->vecDim();
   for (HighsInt iEl = 0; iEl < this->numNz(); iEl++) {
     if (this->index_[iEl] < 0 || this->index_[iEl] >= vec_dim) {
       highsLogUser(log_options, HighsLogType::kError,
@@ -723,46 +717,82 @@ HighsStatus HighsSparseMatrix::assessIndexBounds(
   return HighsStatus::kOk;
 }
 
+HighsStatus HighsSparseMatrix::assess(const HighsOptions& options,
+                                      const bool structure_only) {
+  const bool sum_duplicates = false;
+  const double small_matrix_value =
+      structure_only ? 0 : options.small_matrix_value;
+  const double large_matrix_value =
+      structure_only ? kHighsInf : options.large_matrix_value;
+  return this->assess(options.log_options, small_matrix_value,
+                      large_matrix_value, sum_duplicates);
+}
+
 HighsStatus HighsSparseMatrix::assess(const HighsLogOptions& log_options,
-                                      const std::string& matrix_name,
                                       const double small_matrix_value,
                                       const double large_matrix_value,
                                       const bool sum_duplicates,
                                       const std::string* col_names,
                                       const std::string* row_names) {
   assert(this->formatOk());
-  // Identify main dimensions
-  HighsInt vec_dim;
-  HighsInt num_vec;
-  if (this->isColwise()) {
-    vec_dim = this->num_row_;
-    num_vec = this->num_col_;
-  } else {
-    vec_dim = this->num_col_;
-    num_vec = this->num_row_;
-  }
-  const bool partitioned = this->format_ == MatrixFormat::kRowwisePartitioned;
-  return assessMatrix(log_options, matrix_name, vec_dim, num_vec, partitioned,
+  return assessMatrix(log_options, "HighsSparseMatrix", this->name_,
+                      this->vecDim(), this->numVec(),
+                      this->format_ == MatrixFormat::kRowwisePartitioned,
                       this->start_, this->p_end_, this->index_, this->value_,
                       small_matrix_value, large_matrix_value, sum_duplicates,
                       col_names, row_names);
 }
 
-void HighsSparseMatrix::assessSmallValues(const HighsLogOptions& log_options,
-                                          const double small_matrix_value) {
-  double min_value = kHighsInf;
-  const HighsInt num_values = static_cast<HighsInt>(this->value_.size());
-  for (HighsInt iX = 0; iX < num_values; iX++)
-    min_value = std::min(std::abs(this->value_[iX]), min_value);
-  if (min_value > small_matrix_value) return;
-  analyseVectorValues(&log_options, "Small values in matrix", num_values,
-                      this->value_, false, "");
+HighsStatus HighsSparseMatrix::assessExtremeValues(
+    const std::string& name, const HighsOptions& options) const {
+  // Returns HighsStatus::kError if the matrix contains zeros or large
+  // values, and HighsStatus::kWarning if the matrix contains small
+  // nonzero values, otherwise returns HighsStatus::kOk
+  double min_abs_value;
+  double max_abs_value;
+  if (!this->hasExtremeValues(options.small_matrix_value,
+                              options.large_matrix_value, min_abs_value,
+                              max_abs_value))
+    return HighsStatus::kOk;
+  bool error_found = false;
+  bool warning_found = false;
+  if (min_abs_value <= options.small_matrix_value) {
+    warning_found = true;
+    error_found = min_abs_value == 0;
+    highsLogUser(options.log_options,
+                 error_found ? HighsLogType::kError : HighsLogType::kWarning,
+                 "Matrix %shas smallest |value| of %.2g at/below "
+                 "tolerance of %g\n",
+                 name.c_str(), min_abs_value, options.small_matrix_value);
+  }
+  if (max_abs_value >= options.large_matrix_value) {
+    error_found = true;
+    highsLogUser(options.log_options, HighsLogType::kError,
+                 "Matrix %shas largest |value| of %.2g at/above "
+                 "tolerance of %g\n",
+                 name.c_str(), max_abs_value, options.large_matrix_value);
+  }
+  const HighsInt num_values = this->value_.size();
+  analyseVectorValues(&options.log_options, "Extreme values in matrix",
+                      num_values, this->value_, false, "");
+  assert(warning_found || error_found);
+  return error_found ? HighsStatus::kError : HighsStatus::kWarning;
 }
 
-bool HighsSparseMatrix::hasLargeValue(const double large_matrix_value) {
-  for (HighsInt iEl = 0; iEl < this->numNz(); iEl++)
-    if (std::abs(this->value_[iEl]) >= large_matrix_value) return true;
-  return false;
+bool HighsSparseMatrix::hasExtremeValues(const double small_matrix_value,
+                                         const double large_matrix_value,
+                                         double& min_abs_value,
+                                         double& max_abs_value) const {
+  min_abs_value = kHighsInf;
+  max_abs_value = 0;
+  const HighsInt num_values = this->value_.size();
+  for (HighsInt iX = 0; iX < num_values; iX++) {
+    min_abs_value = std::min(std::abs(this->value_[iX]), min_abs_value);
+    max_abs_value = std::max(std::abs(this->value_[iX]), max_abs_value);
+  }
+  if (min_abs_value > small_matrix_value && max_abs_value < large_matrix_value)
+    return false;
+  return true;
 }
 
 void HighsSparseMatrix::considerColScaling(
@@ -1723,4 +1753,20 @@ void HighsSparseMatrix::debugReportRowPrice(const HighsInt iRow,
     num_print++;
   }
   printf("\n");
+}
+
+bool HighsSparseMatrix::legalDimensions(
+    const HighsLogOptions& log_options) const {
+  return legalMatrixDimensions(
+      log_options, "HighsSparseMatrix", this->name_, this->numVec(),
+      this->format_ == MatrixFormat::kRowwisePartitioned, this->start_,
+      this->p_end_, this->index_, this->value_);
+}
+
+HighsStatus HighsSparseMatrix::trimDimensions(
+    const HighsLogOptions& log_options) {
+  return trimMatrixDimensions(
+      log_options, "HighsSparseMatrix", this->name_, this->numVec(),
+      this->format_ == MatrixFormat::kRowwisePartitioned, this->start_,
+      this->p_end_, this->index_, this->value_);
 }

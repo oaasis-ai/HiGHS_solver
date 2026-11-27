@@ -20,6 +20,7 @@
 #include "simplex/HSimplex.h"
 #include "util/HighsMatrixUtils.h"
 #include "util/HighsSort.h"
+#include "util/HighsUndoStack.h"
 
 void Highs::reportModelStats() const {
   const HighsLp& lp = this->model_.lp_;
@@ -402,13 +403,8 @@ HighsStatus Highs::addColsInterface(
   if (ext_num_new_nz < 0) return HighsStatus::kError;
   if (ext_num_new_col == 0) return HighsStatus::kOk;
   if (ext_num_new_col > 0)
-    if (isColDataNull(options.log_options, ext_col_cost, ext_col_lower,
-                      ext_col_upper))
-      return HighsStatus::kError;
-  if (ext_num_new_nz > 0)
-    if (isMatrixDataNull(options.log_options, ext_a_start, ext_a_index,
-                         ext_a_value))
-      return HighsStatus::kError;
+    assert(ext_col_cost && ext_col_lower && ext_col_upper);
+  if (ext_num_new_nz > 0) assert(ext_a_start && ext_a_index && ext_a_value);
 
   HighsLp& lp = model_.lp_;
   HighsBasis& basis = basis_;
@@ -456,6 +452,7 @@ HighsStatus Highs::addColsInterface(
   // that is easy to handle and, if there are nonzeros, it can be
   // normalised
   HighsSparseMatrix local_a_matrix;
+  local_a_matrix.name_ = "local_a_matrix";
   local_a_matrix.num_col_ = ext_num_new_col;
   local_a_matrix.num_row_ = lp.num_row_;
   local_a_matrix.format_ = MatrixFormat::kColwise;
@@ -469,10 +466,9 @@ HighsStatus Highs::addColsInterface(
     // Assess the matrix rows
     return_status = interpretCallStatus(
         options_.log_options,
-        local_a_matrix.assess(options.log_options, "LP",
-                              options.small_matrix_value,
+        local_a_matrix.assess(options.log_options, options.small_matrix_value,
                               options.large_matrix_value, sum_duplicates),
-        return_status, "assessMatrix");
+        return_status, "local_a_matrix.assess");
     if (return_status == HighsStatus::kError) return return_status;
   } else {
     // No nonzeros so, whether the constraint matrix is column-wise or
@@ -507,7 +503,7 @@ HighsStatus Highs::addColsInterface(
 
   // Increase the number of columns in the LP
   lp.num_col_ += ext_num_new_col;
-  assert(lpDimensionsOk("addCols", lp, options.log_options));
+  assert(lp.legalDimensions("addCols", options.log_options));
 
   // Interpret possible introduction of infinite costs
   lp.has_infinite_cost_ = lp.has_infinite_cost_ || local_has_infinite_cost;
@@ -545,13 +541,8 @@ HighsStatus Highs::addRowsInterface(HighsInt ext_num_new_row,
   if (ext_num_new_row < 0) return HighsStatus::kError;
   if (ext_num_new_nz < 0) return HighsStatus::kError;
   if (ext_num_new_row == 0) return HighsStatus::kOk;
-  if (ext_num_new_row > 0)
-    if (isRowDataNull(options.log_options, ext_row_lower, ext_row_upper))
-      return HighsStatus::kError;
-  if (ext_num_new_nz > 0)
-    if (isMatrixDataNull(options.log_options, ext_ar_start, ext_ar_index,
-                         ext_ar_value))
-      return HighsStatus::kError;
+  if (ext_num_new_row > 0) assert(ext_row_lower && ext_row_upper);
+  if (ext_num_new_nz > 0) assert(ext_ar_start && ext_ar_index && ext_ar_value);
 
   HighsLp& lp = model_.lp_;
   HighsBasis& basis = basis_;
@@ -589,6 +580,7 @@ HighsStatus Highs::addRowsInterface(HighsInt ext_num_new_row,
   // is easy to handle and, if there are nonzeros, it can be
   // normalised
   HighsSparseMatrix local_ar_matrix;
+  local_ar_matrix.name_ = "local_ar_matrix";
   local_ar_matrix.num_col_ = lp.num_col_;
   local_ar_matrix.num_row_ = ext_num_new_row;
   local_ar_matrix.format_ = MatrixFormat::kRowwise;
@@ -602,10 +594,9 @@ HighsStatus Highs::addRowsInterface(HighsInt ext_num_new_row,
     const bool sum_duplicates = false;
     return_status = interpretCallStatus(
         options_.log_options,
-        local_ar_matrix.assess(options.log_options, "LP",
-                               options.small_matrix_value,
+        local_ar_matrix.assess(options.log_options, options.small_matrix_value,
                                options.large_matrix_value, sum_duplicates),
-        return_status, "assessMatrix");
+        return_status, "local_ar_matrix.assess");
     if (return_status == HighsStatus::kError) return return_status;
   } else {
     // No nonzeros so, whether the constraint matrix is row-wise or
@@ -639,7 +630,7 @@ HighsStatus Highs::addRowsInterface(HighsInt ext_num_new_row,
 
   // Increase the number of rows in the LP
   lp.num_row_ += ext_num_new_row;
-  assert(lpDimensionsOk("addRows", lp, options.log_options));
+  assert(lp.legalDimensions("addRows", options.log_options));
 
   // Deduce the consequences of adding new rows
   invalidateModelStatusSolutionAndInfo();
@@ -766,7 +757,7 @@ void Highs::deleteColsInterface(HighsIndexCollection& index_collection) {
     }
     assert(new_col == lp.num_col_);
   }
-  assert(lpDimensionsOk("deleteCols", lp, options_.log_options));
+  assert(lp.legalDimensions("deleteCols", options_.log_options));
   lp.col_hash_.name2index.clear();
 }
 
@@ -819,7 +810,7 @@ void Highs::deleteRowsInterface(HighsIndexCollection& index_collection) {
     }
     assert(new_row == lp.num_row_);
   }
-  assert(lpDimensionsOk("deleteRows", lp, options_.log_options));
+  assert(lp.legalDimensions("deleteRows", options_.log_options));
   lp.row_hash_.name2index.clear();
 }
 
@@ -857,9 +848,8 @@ void Highs::getRowsInterface(const HighsIndexCollection& index_collection,
   }
 }
 
-void Highs::getCoefficientInterface(const HighsInt ext_row,
-                                    const HighsInt ext_col,
-                                    double& value) const {
+void Highs::getCoeffInterface(const HighsInt ext_row, const HighsInt ext_col,
+                              double& value) const {
   const HighsLp& lp = model_.lp_;
   assert(0 <= ext_row && ext_row < lp.num_row_);
   assert(0 <= ext_col && ext_col < lp.num_col_);
@@ -981,8 +971,8 @@ HighsStatus Highs::changeColBoundsInterface(
   // set and data are in ascending order
   if (index_collection.is_set_)
     sortSetData(index_collection.set_num_entries_, index_collection.set_,
-                col_lower, col_upper, NULL, local_colLower.data(),
-                local_colUpper.data(), NULL);
+                col_lower, col_upper, nullptr, local_colLower.data(),
+                local_colUpper.data(), nullptr);
   HighsStatus return_status = HighsStatus::kOk;
   return_status = interpretCallStatus(
       options_.log_options,
@@ -1032,8 +1022,8 @@ HighsStatus Highs::changeRowBoundsInterface(
   // set and data are in ascending order
   if (index_collection.is_set_)
     sortSetData(index_collection.set_num_entries_, index_collection.set_, lower,
-                upper, NULL, local_rowLower.data(), local_rowUpper.data(),
-                NULL);
+                upper, nullptr, local_rowLower.data(), local_rowUpper.data(),
+                nullptr);
   HighsStatus return_status = HighsStatus::kOk;
   return_status = interpretCallStatus(
       options_.log_options,
@@ -1062,18 +1052,23 @@ HighsStatus Highs::changeRowBoundsInterface(
 }
 
 // Change a single coefficient in the matrix
-void Highs::changeCoefficientInterface(const HighsInt ext_row,
-                                       const HighsInt ext_col,
-                                       const double ext_new_value) {
+HighsStatus Highs::changeCoeffInterface(const HighsInt ext_row,
+                                        const HighsInt ext_col,
+                                        const double ext_new_value) {
   HighsLp& lp = model_.lp_;
   // Ensure that the LP is column-wise
   lp.ensureColwise();
+  // Should alread yhave checked that the row and column indices are
+  // legal, and that the value is not large
   assert(0 <= ext_row && ext_row < lp.num_row_);
   assert(0 <= ext_col && ext_col < lp.num_col_);
-  const bool zero_new_value =
-      std::fabs(ext_new_value) <= options_.small_matrix_value;
-  changeLpMatrixCoefficient(lp, ext_row, ext_col, ext_new_value,
-                            zero_new_value);
+  const double abs_ext_new_value = std::fabs(ext_new_value);
+  assert(abs_ext_new_value < options_.large_matrix_value);
+
+  HighsStatus return_status =
+      changeLpMatrixCoeff(options_.log_options, lp, ext_row, ext_col,
+                          ext_new_value, options_.small_matrix_value);
+  assert(return_status != HighsStatus::kError);
   // Deduce the consequences of a changed element
   //
   // ToDo: Can do something more intelligent if element is in nonbasic
@@ -1094,6 +1089,7 @@ void Highs::changeCoefficientInterface(const HighsInt ext_row,
 
   // Determine any implications for simplex data
   ekk_instance_.updateStatus(LpAction::kNewRows);
+  return return_status;
 }
 
 HighsStatus Highs::scaleColInterface(const HighsInt col,
@@ -1523,7 +1519,7 @@ HighsStatus Highs::basisSolveInterface(const vector<double>& rhs,
     ekk_instance_.ftran(solve_vector, expected_density);
   }
   // Extract the solution
-  if (solution_indices == NULL) {
+  if (solution_indices == nullptr) {
     // Nonzeros in the solution not required
     if (solve_vector.count > num_row) {
       // Solution nonzeros not known
@@ -1588,14 +1584,10 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
   // should be recovered
   std::vector<double> col_cost;
   HighsHessian hessian;
-  bool solve_relaxation;
-  std::string presolve;
-  std::string solver;
-  bool allow_unbounded_or_infeasible;
   bool solve_feasibility_problem = false;
   const bool is_qp = model_.isQp();
 
-  if (dual_ray_value != NULL) {
+  if (dual_ray_value != nullptr) {
     // User wants a dual ray whatever
     if (!has_dual_ray || !has_invert) {
       // No dual ray is known, or no INVERT to compute it
@@ -1614,11 +1606,6 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
       // solved to yield a basic solution
       col_cost = lp.col_cost_;
       if (is_qp) hessian = model_.hessian_;
-      solve_relaxation = this->options_.solve_relaxation;
-      presolve = this->options_.presolve;
-      solver = this->options_.solver;
-      allow_unbounded_or_infeasible =
-          this->options_.allow_unbounded_or_infeasible;
       solve_feasibility_problem = true;
       // Zero the costs and Hessian
       std::vector<double> zero_costs;
@@ -1637,18 +1624,15 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
         this->passHessian(zero_hessian);
       }
       //
-      this->options_.solve_relaxation = true;
-      this->options_.presolve = kHighsOffString;
-      this->options_.solver = kSimplexString;
-      this->options_.allow_unbounded_or_infeasible = false;
+      HighsUndoStack options_undo;
+      options_undo.set(this->options_.solve_relaxation, true);
+      options_undo.set(this->options_.presolve, kHighsOffString);
+      options_undo.set(this->options_.solver, kSimplexString);
+      options_undo.set(this->options_.allow_unbounded_or_infeasible, false);
       HighsStatus call_status = this->run();
       // Restore the column costs, any Hessian, the relaxation,
       // presolve and solver settings
-      this->options_.solve_relaxation = solve_relaxation;
-      this->options_.presolve = presolve;
-      this->options_.solver = solver;
-      this->options_.allow_unbounded_or_infeasible =
-          allow_unbounded_or_infeasible;
+      options_undo.reset();
 
       lp.col_cost_ = col_cost;
       if (is_qp) model_.hessian_ = hessian;
@@ -1673,7 +1657,8 @@ HighsStatus Highs::getDualRayInterface(bool& has_dual_ray,
         rhs.assign(num_row, 0);
         rhs[iRow] = ekk_instance_.dual_ray_record_.sign;
         HighsInt* dual_ray_num_nz = 0;
-        basisSolveInterface(rhs, dual_ray_value, dual_ray_num_nz, NULL, true);
+        basisSolveInterface(rhs, dual_ray_value, dual_ray_num_nz, nullptr,
+                            true);
         // Now save the dual ray itself
         ekk_instance_.dual_ray_record_.value.resize(num_row);
         for (HighsInt iRow = 0; iRow < num_row; iRow++)
@@ -1737,13 +1722,9 @@ HighsStatus Highs::getPrimalRayInterface(bool& has_primal_ray,
   assert(!lp.is_moved_);
   has_primal_ray = ekk_instance_.primal_ray_record_.index != kNoRayIndex;
 
-  bool solve_relaxation;
-  std::string presolve;
-  std::string solver;
-  bool allow_unbounded_or_infeasible;
   bool solve_unboundedness_problem = false;
 
-  if (primal_ray_value != NULL) {
+  if (primal_ray_value != nullptr) {
     // User wants a primal ray whatever
     if (!has_primal_ray || !has_invert) {
       // No primal ray is known, or no INVERT to compute it
@@ -1758,24 +1739,15 @@ HighsStatus Highs::getPrimalRayInterface(bool& has_primal_ray,
       }
       highsLogUser(options_.log_options, HighsLogType::kInfo,
                    "Solving LP to try to compute primal ray\n");
-      // Save the relaxation, presolve and solver settings
-      solve_relaxation = this->options_.solve_relaxation;
-      presolve = this->options_.presolve;
-      solver = this->options_.solver;
-      allow_unbounded_or_infeasible =
-          this->options_.allow_unbounded_or_infeasible;
       solve_unboundedness_problem = true;
-      this->options_.solve_relaxation = true;
-      this->options_.presolve = kHighsOffString;
-      this->options_.solver = kSimplexString;
-      this->options_.allow_unbounded_or_infeasible = false;
+      HighsUndoStack options_undo;
+      options_undo.set(this->options_.solve_relaxation, true);
+      options_undo.set(this->options_.presolve, kHighsOffString);
+      options_undo.set(this->options_.solver, kSimplexString);
+      options_undo.set(this->options_.allow_unbounded_or_infeasible, false);
       HighsStatus call_status = this->run();
       // Restore the relaxation, presolve and solver settings
-      this->options_.solve_relaxation = solve_relaxation;
-      this->options_.presolve = presolve;
-      this->options_.solver = solver;
-      this->options_.allow_unbounded_or_infeasible =
-          allow_unbounded_or_infeasible;
+      options_undo.reset();
       if (call_status != HighsStatus::kOk) return_status = call_status;
       has_primal_ray = ekk_instance_.primal_ray_record_.index != kNoRayIndex;
       has_invert = ekk_instance_.status_.has_invert;
@@ -1811,7 +1783,7 @@ HighsStatus Highs::getPrimalRayInterface(bool& has_primal_ray,
           rhs[col - num_col] = primal_ray_sign;
         }
         HighsInt* column_num_nz = 0;
-        basisSolveInterface(rhs, column.data(), column_num_nz, NULL, false);
+        basisSolveInterface(rhs, column.data(), column_num_nz, nullptr, false);
         // Now zero primal_ray_value and scatter the column according to
         // the basic variables.
         for (HighsInt iCol = 0; iCol < num_col; iCol++)
@@ -2074,13 +2046,13 @@ HighsStatus Highs::getIisInterface() {
     // Model is known to be infeasible, and a dual ray option is
     // chosen, but it has no INVERT, presumably because infeasibility
     // detected in presolve, so solve without presolve
-    std::string presolve = options_.presolve;
-    options_.presolve = kHighsOffString;
+    HighsUndoStack options_undo;
+    options_undo.set(options_.presolve, kHighsOffString);
 
     double simplex_time = -this->getRunTime();
     HighsInt simplex_iterations = -info_.simplex_iteration_count;
     HighsStatus run_status = this->optimizeModel();
-    options_.presolve = presolve;
+    options_undo.reset();
     simplex_time += this->getRunTime();
     simplex_iterations += info_.simplex_iteration_count;
     this->iis_.info_.update(simplex_time, simplex_iterations);
@@ -2119,7 +2091,7 @@ HighsStatus Highs::getIisInterface() {
     rhs[iRow] = 1;
     std::vector<double> dual_ray_value(num_row);
     HighsInt* dual_ray_num_nz = 0;
-    basisSolveInterface(rhs, dual_ray_value.data(), dual_ray_num_nz, NULL,
+    basisSolveInterface(rhs, dual_ray_value.data(), dual_ray_num_nz, nullptr,
                         true);
     for (HighsInt iRow = 0; iRow < lp.num_row_; iRow++)
       if (dual_ray_value[iRow]) this->iis_.row_index_.push_back(iRow);
@@ -2574,15 +2546,15 @@ HighsStatus Highs::elasticityFilter(const double global_lower_penalty,
   this->iis_.clear();
   // Lambda for gathering data when solving an LP
   auto solveLp = [&]() -> HighsStatus {
-    bool output_flag = options_.output_flag;
-    options_.output_flag = false;
+    HighsUndoStack options_undo;
+    options_undo.set(options_.output_flag, false);
     double simplex_time = -this->getRunTime();
     HighsInt simplex_iterations = -info_.simplex_iteration_count;
     run_status = this->optimizeModel();
     simplex_time += this->getRunTime();
     simplex_iterations += info_.simplex_iteration_count;
     iis.info_.update(simplex_time, simplex_iterations);
-    options_.output_flag = output_flag;
+    options_undo.reset();
     return run_status;
   };
 
@@ -3187,16 +3159,15 @@ HighsStatus Highs::userScaleSolution(HighsUserScaleData& data,
   if (has_integrality)
     info_.mip_dual_bound *= (bound_scale_value * objective_scale_value);
 
-  const double primal_feasibility_tolerance =
-      options_.primal_feasibility_tolerance;
+  HighsUndoStack options_undo;
   // Remember to check primal feasibility using the tolerance used
   // when the model was solved
   if (model_.isMip() && !options_.solve_relaxation)
-    options_.primal_feasibility_tolerance =
-        options_.getMipPrimalFeasibilityTolerance();
+    options_undo.set(options_.primal_feasibility_tolerance,
+                     options_.getMipPrimalFeasibilityTolerance());
   getKktFailures(options_, model_, solution_, basis_, info_);
   // Restore the primal feasibility tolerance
-  options_.primal_feasibility_tolerance = primal_feasibility_tolerance;
+  options_undo.reset();
   return reportKktFailures(model_.lp_, options_, info_,
                            "After removing user scaling")
              ? HighsStatus::kWarning
@@ -3746,7 +3717,9 @@ void Highs::formIllConditioningLp1(HighsLp& ill_conditioning_lp,
   ill_conditioning_matrix.num_row_ = ill_conditioning_lp.num_row_;
 }
 
-bool Highs::infeasibleBoundsOk() {
+// ToDo: this method shouldn't change the incumbent model irrevocably,
+// since this loses user data
+bool Highs::processedBoundsFindsInfeasibility() {
   const HighsLogOptions& log_options = this->options_.log_options;
   HighsLp& lp = this->model_.lp_;
 
@@ -3805,7 +3778,7 @@ bool Highs::infeasibleBoundsOk() {
           log_options, HighsLogType::kInfo,
           "%s %d bounds [%g, %g] have excessive infeasibility = %g%s\n",
           type.c_str(), int(iX), lower, upper, range,
-          performed_inward_integer_rounding ? " due to inward integer rounding"
+          performed_inward_integer_rounding ? " after inward integer rounding"
                                             : "");
     return false;
   };
@@ -3826,8 +3799,8 @@ bool Highs::infeasibleBoundsOk() {
         double feastol = this->options_.mip_feasibility_tolerance;
         double integer_lower = std::ceil(lower - feastol);
         double integer_upper = std::floor(upper + feastol);
-        assert(integer_lower >= lower);
-        assert(integer_upper <= upper);
+        assert(integer_lower >= lower - feastol);
+        assert(integer_upper <= upper + feastol);
         performed_inward_integer_rounding =
             integer_lower > lower || integer_upper < upper;
         lower = integer_lower;
@@ -3850,6 +3823,9 @@ bool Highs::infeasibleBoundsOk() {
     // bounds being propagated to the relaxation, this can prevent a
     // dual ray from being constructed
   }
+  // Set performed_inward_integer_rounding = false since it's still
+  // checked in infeasibleBoundOk, and may be true from last pass with
+  // integer variable
   performed_inward_integer_rounding = false;
   for (HighsInt iRow = 0; iRow < lp.num_row_; iRow++) {
     if (lp.row_lower_[iRow] > lp.row_upper_[iRow])
@@ -3863,7 +3839,7 @@ bool Highs::infeasibleBoundsOk() {
     highsLogUser(log_options, HighsLogType::kInfo,
                  "Model has %d significant inconsistent bound(s): infeasible\n",
                  int(num_true_infeasible_bound));
-  return num_true_infeasible_bound == 0;
+  return num_true_infeasible_bound > 0;
 }
 
 bool Highs::validLinearObjective(const HighsLinearObjective& linear_objective,
@@ -3935,6 +3911,7 @@ HighsStatus Highs::returnFromLexicographicOptimization(
     info_.invalidateDualKkt();
     this->solution_.value_valid = true;
     this->model_.lp_.col_cost_.assign(this->model_.lp_.num_col_, 0);
+    this->model_.lp_.has_infinite_cost_ = false;
   }
   return return_status;
 }
@@ -4009,6 +3986,8 @@ HighsStatus Highs::multiobjectiveSolve() {
                               multi_linear_objective.coefficients[iCol];
     }
     lp.sense_ = ObjSense::kMinimize;
+    // The costs have changed, so determine whether any are infinite
+    lp.has_infinite_cost_ = lp.hasInfiniteCost(options_.infinite_cost);
 
     multi_objective_log =
         std::unique_ptr<std::stringstream>(new std::stringstream());
@@ -4054,6 +4033,7 @@ HighsStatus Highs::multiobjectiveSolve() {
   // Clear LP objective
   lp.offset_ = 0;
   lp.col_cost_.assign(lp.num_col_, 0);
+  lp.has_infinite_cost_ = false;
   const HighsInt original_lp_num_row = lp.num_row_;
   std::vector<HighsInt> index(lp.num_col_);
   std::vector<double> value(lp.num_col_);
@@ -4068,6 +4048,8 @@ HighsStatus Highs::multiobjectiveSolve() {
         this->multi_linear_objective_[iObj];
     lp.offset_ = linear_objective.offset;
     lp.col_cost_ = linear_objective.coefficients;
+    // The costs have changed, so determine whether any are infinite
+    lp.has_infinite_cost_ = lp.hasInfiniteCost(options_.infinite_cost);
     lp.sense_ =
         linear_objective.weight > 0 ? ObjSense::kMinimize : ObjSense::kMaximize;
     if (lp.isMip() && solution.value_valid) {
@@ -4210,8 +4192,9 @@ HighsStatus Highs::multiobjectiveSolve() {
                                              original_lp_num_row);
 }
 
-bool Highs::tryPdlpCleanup(HighsInt& pdlp_cleanup_iteration_limit,
-                           const HighsInfo& presolved_lp_info) const {
+bool Highs::tryPdlpCleanup(
+    HighsInt& pdlp_cleanup_iteration_limit,
+    const HighsInt presolved_lp_pdlp_iteration_count) const {
   // Primal/dual infeasibilities/residuals can be magnified in
   // postsolve after PDLP, and IPX without crossover can fail,
   // both leading to model_status_ == HighsModelStatus::kUnknown.
@@ -4264,10 +4247,10 @@ bool Highs::tryPdlpCleanup(HighsInt& pdlp_cleanup_iteration_limit,
   }
   //
   // Force PDLP to be used with an iteration limit
-  if (presolved_lp_info.pdlp_iteration_count > 0) {
+  if (presolved_lp_pdlp_iteration_count > 0) {
     // PDLP was used, so allow 10% of the iterations to clean up
     HighsInt ten_percent_pdlp_iteration_count =
-        presolved_lp_info.pdlp_iteration_count / 10;
+        presolved_lp_pdlp_iteration_count / 10;
     pdlp_cleanup_iteration_limit =
         std::max(HighsInt(10000), ten_percent_pdlp_iteration_count);
   } else {
@@ -4382,7 +4365,7 @@ HighsProfilingRecord* HighsProfiling::getHighsProfilingRecord(
 
 void HighsProfiling::start(const HighsInt profiling_clock, const bool restart) {
   assert(profiling_clock >= 0);
-  if (profiling_clock >= this->num_profiling_clock_) return;
+  if (!this->validClock(profiling_clock)) return;
   // For a sub-MIP, don't start the clock for anything but a
   // sub-solver
   if (this->isSubMip() && profiling_clock >= kToSubSolver) return;
@@ -4415,7 +4398,7 @@ void HighsProfiling::start(const HighsInt profiling_clock, const bool restart) {
 
 void HighsProfiling::stop(const HighsInt profiling_clock) {
   assert(profiling_clock >= 0);
-  if (profiling_clock >= this->num_profiling_clock_) return;
+  if (!this->validClock(profiling_clock)) return;
   // For a sub-MIP, don't start the clock for anything but a
   // sub-solver
   if (this->isSubMip() && profiling_clock >= kToSubSolver) return;
@@ -4441,7 +4424,7 @@ void HighsProfiling::stop(const HighsInt profiling_clock) {
 double HighsProfiling::read(const HighsInt profiling_clock,
                             const HighsInt record_type) {
   assert(profiling_clock >= 0);
-  if (profiling_clock >= this->num_profiling_clock_) return -kHighsInf;
+  if (!this->validClock(profiling_clock)) return -kHighsInf;
   HighsProfilingRecord* thread_record =
       this->getHighsProfilingRecord(record_type);
   // If the clock is running, work out current running time
@@ -4455,7 +4438,7 @@ double HighsProfiling::read(const HighsInt profiling_clock,
 HighsInt HighsProfiling::numCall(const HighsInt profiling_clock,
                                  const HighsInt record_type) {
   assert(profiling_clock >= 0);
-  if (profiling_clock >= this->num_profiling_clock_) return -kHighsIInf;
+  if (!this->validClock(profiling_clock)) return -kHighsIInf;
   HighsProfilingRecord* thread_record =
       this->getHighsProfilingRecord(record_type);
   const HighsInt this_call_counts =
@@ -4466,7 +4449,7 @@ HighsInt HighsProfiling::numCall(const HighsInt profiling_clock,
 bool HighsProfiling::running(const HighsInt profiling_clock,
                              const HighsInt record_type) {
   assert(profiling_clock >= 0);
-  if (profiling_clock >= this->num_profiling_clock_) return false;
+  if (!this->validClock(profiling_clock)) return false;
   HighsProfilingRecord* thread_record =
       this->getHighsProfilingRecord(record_type);
   double time_start = thread_record->start_time[profiling_clock];

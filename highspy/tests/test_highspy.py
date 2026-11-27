@@ -1,6 +1,7 @@
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from sys import platform
 from unittest.mock import patch
 
@@ -137,10 +138,10 @@ class TestHighsPy(unittest.TestCase):
 
     def test_version(self):
         h = self.get_basic_model()
-        self.assertEqual(h.version(), "1.15.1")
+        self.assertEqual(h.version(), "1.16.0")
         self.assertEqual(h.versionMajor(), 1)
-        self.assertEqual(h.versionMinor(), 15)
-        self.assertEqual(h.versionPatch(), 1)
+        self.assertEqual(h.versionMinor(), 16)
+        self.assertEqual(h.versionPatch(), 0)
 
     def test_basics(self):
         h = self.get_basic_model()
@@ -1424,6 +1425,7 @@ class TestHighsPy(unittest.TestCase):
         h.cbLogging += chk_callback
         h.cbSimplexInterrupt += do_nothing
         h.cbIpmInterrupt += do_nothing
+        h.cbPdlpInterrupt += do_nothing
         h.cbMipSolution += do_nothing
         h.cbMipImprovingSolution += do_nothing
         h.cbMipLogging += do_nothing
@@ -1450,6 +1452,7 @@ class TestHighsPy(unittest.TestCase):
         h.cbLogging -= chk_callback
         h.cbSimplexInterrupt -= do_nothing
         h.cbIpmInterrupt -= do_nothing
+        h.cbPdlpInterrupt -= do_nothing
         h.cbMipSolution -= do_nothing
         h.cbMipImprovingSolution -= do_nothing
         h.cbMipLogging -= do_nothing
@@ -1481,6 +1484,7 @@ class TestHighsPy(unittest.TestCase):
         self.assertRaises(HighsError, lambda: h.__setattr__("cbLogging", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbSimplexInterrupt", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbIpmInterrupt", None))
+        self.assertRaises(HighsError, lambda: h.__setattr__("cbPdlpInterrupt", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbMipSolution", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbMipImprovingSolution", None))
         self.assertRaises(HighsError, lambda: h.__setattr__("cbMipLogging", None))
@@ -2593,3 +2597,18 @@ class TestHighsLinearExpressionPy(unittest.TestCase):
         result = expr * x
         self.assertEqualExpr(result, [x], [5.0])
         self.assertRaises(HighsError, lambda: expr * "bad")  # type: ignore
+
+
+class TestHighsPyPackaging(unittest.TestCase):
+    def test_no_separate_libhighs(self):
+        """A libhighs in the wheel can be swapped with another package's copy, e.g. OR-Tools"""
+        package_dir = Path(highspy.__file__).parent
+        self.assertEqual(sorted(p.name for p in package_dir.glob("libhighs*")), [])
+
+    @unittest.skipIf(platform == "win32", "DLLs only export marked symbols")
+    def test_core_does_not_export_highs_symbols(self):
+        """Exported HiGHS symbols can be merged with another HiGHS in the process (#2453)"""
+        import ctypes
+
+        core = ctypes.CDLL(highspy._core.__file__)
+        self.assertFalse(hasattr(core, "Highs_create"))
