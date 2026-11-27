@@ -103,10 +103,12 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 
   # on 32-bit x86, GCC and Clang use the x87 unit with 80-bit intermediate
   # results by default. SSE2 gives double arithmetic as on x86-64 (and as
-  # MSVC uses by default for 32-bit x86).
+  # MSVC uses by default for 32-bit x86). Emscripten's toolchain reports
+  # CMAKE_SYSTEM_PROCESSOR as x86 for wasm32, where em++ rejects -msse2.
   if (CMAKE_SIZEOF_VOID_P EQUAL 4 AND
       CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86|i[3-6]86|x86_64|AMD64|amd64)$" AND
-      NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+      NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC" AND
+      NOT EMSCRIPTEN)
     list(APPEND HIGHS_FLOATING_POINT_OPTIONS
          "$<$<COMPILE_LANGUAGE:C,CXX>:-msse2>"
          "$<$<COMPILE_LANGUAGE:C,CXX>:-mfpmath=sse>")
